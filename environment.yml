@@ -1,12 +1,11 @@
 name: geomodelator
 channels:
-  - hydrocomputing
-  - msys2
   - conda-forge
 dependencies:
-  - python=3.11
-  - ipython=8.8
-  - matplotlib=3.6
-  - numpy=1.24
-  - pyevtk=1.5
-  - scipy=1.10
+  - ipython
+  - matplotlib
+  - numpy
+  - gdal
+  - pyevtk
+  - pyvista
+  - scipy
