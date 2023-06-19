@@ -142,3 +142,8 @@ PARTITIONWIDTH = {}
 PARTITIONWIDTH["fault-01"] = 10
 PARTITIONWIDTH["fault-09"] = 10
 PARTITIONWIDTH["fault-12"] = 10
+
+# MODEL LAYER state  ##################################
+LAYERSTATE = {}
+
+# LAYERSTATE["layer-01"] = 0

@@ -43,6 +43,7 @@ class Settings():
     model_p8 = None
     model_dimension = None
     partition_width = None
+    layer_state = None
     dx = None
     dy = None
     dz = None
@@ -59,6 +60,7 @@ class Settings():
         model_p2,
         model_dimension,
         partition_width,
+        layer_state,
         dx,
         dy,
         dz,
@@ -73,6 +75,7 @@ class Settings():
         self.model_p2 = model_p2
         self.model_dimension = model_dimension
         self.partition_width = partition_width
+        self.layer_state = layer_state
         self.dx = dx
         self.dy = dy
         self.dz = dz
@@ -203,6 +206,8 @@ class Layer_Set:
         self._A = None
         self._B = None
         self._orientation = None
+        self._option = None
+
 
     @property
     def A(self):
@@ -234,8 +239,26 @@ class Layer_Set:
         ''' setter surface orientation '''
         self._orientation = value
 
+    @property
+    def option(self):
+        ''' getter surface orientation '''
+        return self._option
 
-def interpolate(data, x_vector, y_vector, indexing='xy', method=0):
+    @option.setter
+    def option(self, value):
+        ''' setter surface orientation '''
+        self._option = value
+
+class Partition_Table:
+    '''
+        Parition_Table class
+    '''
+    pname = None
+    mode1 = None
+    mode2 = None
+    pid = None
+
+def interpolate(data, x_vector, y_vector, indexing='xy', method=2):
     '''
         Method to interpolate a surface to plane (e.g. xy or yz or xz).
     '''
@@ -374,15 +397,25 @@ def normalized_grid(model):
     return vtk_grid_x, vtk_grid_y, vtk_grid_z
 
 
-def rotate_grid(model):
+def rotate_grid(model, a=None, b=None, c=None, indexing='ij'):
     '''
         Rotate model by rotation angle
     '''
+
+    if a is None:
+        a = model.x
+
+    if b is None:
+        b = model.y
+
+    if c is None:
+        c = model.z
+
     z_matrix, y_matrix, x_matrix = np.meshgrid(
-        model.z,
-        model.y,
-        model.x,
-        indexing='ij'
+        c,
+        b,
+        a,
+        indexing=indexing
     )
 
     z_list = [item for layer in z_matrix for row in layer for item in row]
@@ -412,12 +445,19 @@ def rotate_grid(model):
             ]
         )
 
+    # vtk_grid_x = np.array([coord[0] for coord in coord_list]).reshape((\
+                            # len(model.z),len(model.y),len(model.x)))
+    # vtk_grid_y = np.array([coord[1] for coord in coord_list]).reshape((\
+                            # len(model.z),len(model.y),len(model.x)))
+    # vtk_grid_z = np.array([coord[2] for coord in coord_list]).reshape((\
+                            # len(model.z),len(model.y),len(model.x)))
+
     vtk_grid_x = np.array([coord[0] for coord in coord_list]).reshape((\
-                            len(model.z),len(model.y),len(model.x)))
+                            len(c),len(b),len(a)))
     vtk_grid_y = np.array([coord[1] for coord in coord_list]).reshape((\
-                            len(model.z),len(model.y),len(model.x)))
+                            len(c),len(b),len(a)))
     vtk_grid_z = np.array([coord[2] for coord in coord_list]).reshape((\
-                            len(model.z),len(model.y),len(model.x)))
+                            len(c),len(b),len(a)))
 
     return vtk_grid_x, vtk_grid_y, vtk_grid_z
 
@@ -488,6 +528,8 @@ def load_structure_files(cmodel, structure_type='layer', vtk=True):
     layers.orientation = {}
     i = 0
 
+    all_elevs = None
+
     print(f"\nProcess point {structure_type} cloud files:\n")
 
     filenamelist = sorted(
@@ -506,7 +548,7 @@ def load_structure_files(cmodel, structure_type='layer', vtk=True):
 
         pointsToVTK(
             cmodel.settings.path_output_data + "/" + \
-            os.path.splitext(filename)[0] + "_points",
+            os.path.splitext(filename)[0] + "_points_orig",
             np.ascontiguousarray(points[:,0]),
             np.ascontiguousarray(points[:,1]),
             np.ascontiguousarray(points[:,2])
@@ -570,6 +612,7 @@ def load_structure_files(cmodel, structure_type='layer', vtk=True):
         print(f"\nBest plane for interpolation of {structure_type}" + \
             " values to the grid:\n")
 
+
     for filename in filenamelist:
 
         filename = os.path.basename(filename)
@@ -577,6 +620,50 @@ def load_structure_files(cmodel, structure_type='layer', vtk=True):
         points = load_point_cloud_files(
             cmodel.settings.path_input_data + filename
         )
+
+        # points_tmp = points
+
+        # points_tmp = np.array(
+            # [
+                # i
+                    # if i[2]>cmodel.settings.model_b1[2] and i[2]<cmodel.settings.model_b2[2]
+                    # else [np.nan, np.nan, np.nan]
+                # for i in points_tmp
+            # ]
+        # )
+
+        # print(cmodel.settings.model_b1[2])
+        # print(cmodel.settings.model_b2[2])
+        # np.set_printoptions(threshold=sys.maxsize)
+        # np.set_printoptions(suppress=True)
+        # print(points_tmp)
+
+        # points_tmp = points_tmp[~np.isnan(points_tmp).any(axis=1),:]
+        # print(points_tmp.shape)
+        # points = points_tmp
+
+        # if cmodel.settings.rotation_angle != 0:
+            # points_tmp = np.array(
+                # [rotate_coordinate(cmodel, points_tmp[i,:]) for i in range(len(points_tmp))]
+            # )
+
+        # if cmodel.settings.model_p1 != [0,0,0]:
+            # points_tmp =  np.array(
+                # [
+                    # shift_coordinate(
+                        # points_tmp[i,:], [-value for value in cmodel.settings.model_p1]
+                    # ) for i in range(len(points_tmp))
+                # ]
+            # )
+
+        # pointsToVTK(
+            # cmodel.settings.path_output_data + "/" + \
+            # os.path.splitext(filename)[0] + "_points_used",
+            # np.ascontiguousarray(points_tmp[:,0]),
+            # np.ascontiguousarray(points_tmp[:,1]),
+            # np.ascontiguousarray(points_tmp[:,2])
+        # )
+
 
         ## set NAN to 0
         points[np.isnan(points)] = 0
@@ -604,6 +691,7 @@ def load_structure_files(cmodel, structure_type='layer', vtk=True):
             ey, ez, method=2
         )
 
+        all_elevs = [elevationXY, elevationXZ, elevationYZ]
 
         if elevationXY is None:
             layers.orientation[i]= "yz"
@@ -643,6 +731,10 @@ def load_structure_files(cmodel, structure_type='layer', vtk=True):
         if filename.lower().split(".")[0] in cmodel.settings.partition_width:
             width = cmodel.settings.partition_width[filename.split(".")[0]]
 
+        if filename.split(".")[0] in cmodel.settings.layer_state:
+            layer_option = cmodel.settings.layer_state[filename.split(".")[0]]
+        else:
+            layer_option = 0
         # np.set_printoptions(threshold=sys.maxsize)
         if layers.orientation[i] == "xy":
             # print("---------XY------------")
@@ -652,12 +744,14 @@ def load_structure_files(cmodel, structure_type='layer', vtk=True):
             layers.A[i] = {
                 "name" : filename.split(".")[0],
                 "width": width,
-                "elevation": elevationXY
+                "elevation": elevationXY,
+                "option" : layer_option
             }
             layers.B[i] = {
                 "name" : filename.split(".")[0],
                 "width": width,
-                "elevation": elevationYZ
+                "elevation": elevationYZ,
+                "option" : layer_option
             }
 
         if layers.orientation[i] == "xz":
@@ -668,12 +762,14 @@ def load_structure_files(cmodel, structure_type='layer', vtk=True):
             layers.A[i] = {
                 "name" : filename.split(".")[0],
                 "width": width,
-                "elevation": elevationXZ
+                "elevation": elevationXZ,
+                "option" : layer_option
             }
             layers.B[i] = {
                 "name" : filename.split(".")[0],
                 "width": width,
-                "elevation": elevationYZ
+                "elevation": elevationYZ,
+                "option" : layer_option
             }
 
         if layers.orientation[i] == "yz":
@@ -684,12 +780,14 @@ def load_structure_files(cmodel, structure_type='layer', vtk=True):
             layers.A[i] = {
                 "name" : filename.split(".")[0],
                 "width": width,
-                "elevation": elevationYZ
+                "elevation": elevationYZ,
+                "option" : layer_option
             }
             layers.B[i] = {
                 "name" : filename.split(".")[0],
                 "width": width,
-                "elevation": elevationXY
+                "elevation": elevationXY,
+                "option" : layer_option
             }
 
         if vtk:
@@ -706,14 +804,6 @@ def load_structure_files(cmodel, structure_type='layer', vtk=True):
                 c.flatten()
             )
 
-            # status = points_to_vtk_surface(
-                # cmodel,
-                # vtk_filename,
-                # a.flatten(),
-                # b.flatten(),
-                # c.flatten()
-            # )
-
             if status:
                 print(f"{vtk_filename}.vtk")
             else:
@@ -725,24 +815,42 @@ def load_structure_files(cmodel, structure_type='layer', vtk=True):
 
         i += 1
 
-    return layers
+    return layers, all_elevs
 
 
-def generate_layer_partitions(cmodel, layers):
+def generate_layer_partitions(cmodel, layers, old_grid_data):
     '''
         Generate model cell clusters regarding layers
         and add a partition number to this cells
     '''
     grid_data = np.ones((cmodel.nz, cmodel.ny, cmodel.nx), np.int32)
+
+    if old_grid_data is None:
+        old_grid_data = np.ones_like(grid_data)
+
+    partition_data = np.ones_like(grid_data)
+
     tmodel = None
-    flag = 0
+    flag = False
 
     print("\n====================================")
     print("\tGenerate layer partitions")
     print("====================================\n")
-    print("Total number of partitions: ", end='')
 
+    pt = Partition_Table()
+    pt.pname = []
+    pt.mode1 = []
+    pt.pid = []
+    ## default = 1
+
+    print("inaktiv  \t-> 0")
+    print("default  \t-> 1")
     for l in range(0, len(layers.A)):
+        cmodel.settings.partition_number += 1
+        pt.pname.append(layers.A[l]['name'])
+        pt.mode1.append(layers.A[l]['option'])
+        pt.pid.append(cmodel.settings.partition_number)
+        print(f"{pt.pname[l]}\t-> {pt.pid[l]}")
 
         if layers.orientation[l] == "xy":
             ijk = 2
@@ -757,44 +865,69 @@ def generate_layer_partitions(cmodel, layers):
             for j in range(0, cmodel.ny):
                 for k in range(0, cmodel.nz):
                     if layers.orientation[l] == "xy":
-                        if layers.A[l]['elevation'][j, i] > tmodel[i, j, k]:
-                            grid_data[k, j, i] += l+1
-                            cmodel.settings.partition_number = max(
-                                [
-                                    cmodel.settings.partition_number,
-                                    grid_data[k,j,i]
-                                ]
-                            )
-                            flag = 1
-
+                        lx = i
+                        ly = j
                     elif layers.orientation[l] == "xz":
-                        if layers.A[l]['elevation'][k, i] > tmodel[i, j, k]:
-                            grid_data[k, j, i] += l+1
-                            cmodel.settings.partition_number = max(
-                                [
-                                    cmodel.settings.partition_number,
-                                    grid_data[k,j,i]
-                                ]
-                            )
-                            flag = 1
-
+                        lx = i
+                        ly = k
                     elif layers.orientation[l] == "yz":
-                        if layers.A[l]['elevation'][k, j] > tmodel[i, j, k]:
-                            grid_data[k, j, i] += l+1
-                            cmodel.settings.partition_number = max(
-                                [
-                                    cmodel.settings.partition_number,
-                                    grid_data[k,j,i]
-                                ]
-                            )
-                            flag = 1
+                        lx = j
+                        ly = k
 
+                    new_pid = set_new_partitionid(
+                        layers, l, lx, ly, tmodel[i, j, k], pt
+                    )
+
+                    if old_grid_data[k,j,i] != 0:
+                        if new_pid:
+                            grid_data[k, j, i] = pt.pid[l]
+                    else:
+                        grid_data[k, j, i] = 0
+
+                    if new_pid:
+                        partition_data[k, j, i] = pt.pid[l]
+
+        flag = True
+
+
+    print("Total number of partitions: ", end='')
     print(str(cmodel.settings.partition_number+1), end='')
     if flag:
         print(' (0-' + str(cmodel.settings.partition_number) + ')', end='')
     print('')
 
-    return grid_data
+    return grid_data, partition_data
+
+
+def set_new_partitionid(layers, l, i, j, current_cell_center,  pt):
+    '''
+        Set new parition ids 
+    '''
+    new_pid = False
+
+    if layers.A[l]['elevation'][j, i] > current_cell_center:
+        new_pid = l == 0
+
+        for pi in reversed(range(l)):
+            other_layer_elevation = layers.A[pi]['elevation'][j, i]
+            current_layer_elevation = layers.A[l]['elevation'][j, i]
+            if other_layer_elevation > current_layer_elevation:
+                new_pid = True
+            elif other_layer_elevation < current_layer_elevation and \
+                pt.mode1[pi] == 0:
+                new_pid = True
+            elif current_cell_center < other_layer_elevation < current_layer_elevation and \
+                pt.mode1[pi] == 1:
+                new_pid = True
+            elif other_layer_elevation < current_layer_elevation and\
+                current_cell_center < current_layer_elevation  and pt.mode1[l] == 1:
+                new_pid = True
+            elif other_layer_elevation < current_layer_elevation and\
+                other_layer_elevation < current_cell_center and pt.mode1[pi] == 1:
+                new_pid = False
+                break
+
+    return new_pid
 
 
 def generate_model_cell_ids(cmodel):
@@ -802,9 +935,9 @@ def generate_model_cell_ids(cmodel):
         Generate model cell ids for model post processing
     '''
     grid_data = np.zeros((cmodel.nz, cmodel.ny, cmodel.nx), np.int32)
-    grid_i_ids = np.zeros((cmodel.nz, cmodel.ny, cmodel.nx), np.int32)
-    grid_j_ids = np.zeros((cmodel.nz, cmodel.ny, cmodel.nx), np.int32)
-    grid_k_ids = np.zeros((cmodel.nz, cmodel.ny, cmodel.nx), np.int32)
+    grid_i_ids = np.zeros_like(grid_data)
+    grid_j_ids = np.zeros_like(grid_data)
+    grid_k_ids = np.zeros_like(grid_data)
 
     for k in range(0, cmodel.nz):
         for j in range(0, cmodel.ny):
@@ -822,15 +955,18 @@ def generate_active_partitions(cmodel,old_grid_data=None,name="active"):
         Generate model cell clusters regarding the shapefile mask 
         and add a patiation number to this cells
     '''
-
     filenamelist = sorted(
         glob.glob(cmodel.settings.path_shape_data + '*.shp')
     )
 
-    special_grid_data = np.zeros((cmodel.nz, cmodel.ny, cmodel.nx), np.int32)
     tiff_file = cmodel.settings.path_output_data + cmodel.settings.mask_file
 
     if len(filenamelist):
+        if not old_grid_data:
+            old_grid_data = np.zeros((cmodel.nz, cmodel.ny, cmodel.nx), np.int32)
+
+        special_grid_data = np.zeros_like(old_grid_data)
+
         print("\n====================================")
         print("\tGenerate " + name + " partitions")
         print("====================================\n")
@@ -887,13 +1023,16 @@ def generate_active_partitions(cmodel,old_grid_data=None,name="active"):
             mask_data.T, x_vector_model, y_vector_model[::-1]
         )
 
-        old_grid_data[:,model_mask[::-1]< 90] = 0
-        special_grid_data[:,model_mask[::-1]>=90] = 1
+        old_grid_data[:,model_mask[::-1]>110] = 1
+        special_grid_data[:,model_mask[::-1]>110] = 1
 
-        cmodel.settings.partition_number += 1
+    else:
+        if not old_grid_data:
+            old_grid_data = np.ones((cmodel.nz, cmodel.ny, cmodel.nx), np.int32)
+
+        special_grid_data = np.ones_like(old_grid_data)
 
     return old_grid_data, special_grid_data
-
 
 
 def identify_partition_elements(
@@ -1016,11 +1155,12 @@ def generate_special_partitions(cmodel,layers,old_grid_data=None,name="fault"):
     '''
     SPECIALpartition_number = 1
 
-    grid_data = np.copy(old_grid_data)
-    if grid_data is None:
+    if old_grid_data is None:
         grid_data = np.zeros((cmodel.nz, cmodel.ny, cmodel.nx), np.int32)
+    else:
+        grid_data = np.copy(old_grid_data)
 
-    special_grid_data = np.zeros((cmodel.nz, cmodel.ny, cmodel.nx), np.int32)
+    special_grid_data = np.zeros_like(grid_data)
 
     print("\n====================================")
     print("\tGenerate " + name + " partitions")
@@ -1094,6 +1234,7 @@ def points_to_pyvista_surface(cmodel, filename, x, y, z):
         points[i,0] = x_value
         points[i,1] = y[i]
         points[i,2] = z[i]
+
     points = points[~np.isnan(points).any(axis=1),:]
 
     if cmodel.settings.rotation_angle != 0:
@@ -1110,23 +1251,6 @@ def points_to_pyvista_surface(cmodel, filename, x, y, z):
             ]
         )
 
-    points = np.array(
-        [
-            i
-                if i[2]<cmodel.settings.model_p8[2]
-                else [np.nan, np.nan, np.nan]
-            for i in points
-        ]
-    )
-
-    points = np.array(
-        [
-            i
-                if i[2]>cmodel.settings.model_p1[2]
-                else [np.nan, np.nan, np.nan]
-            for i in points
-        ]
-    )
     points = points[~np.isnan(points).any(axis=1),:]
 
     vtk_filename = filename + ".vtk"
@@ -1135,7 +1259,6 @@ def points_to_pyvista_surface(cmodel, filename, x, y, z):
     mesh.save(vtk_filename)
 
     return status
-
 
 
 def points_to_vtk_surface(cmodel, filename, x, y, z):

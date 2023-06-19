@@ -48,6 +48,7 @@ global_settings = gml.Settings(
     model_dimension = cfg.MODELDIMENSION,
     # model_p8 = cfg.MODELP2,
     partition_width = cfg.PARTITIONWIDTH,
+    layer_state = cfg.LAYERSTATE,
     dx = cfg.dx,
     dy = cfg.dy,
     dz = cfg.dz
@@ -67,24 +68,25 @@ cx, cy, cz = model.calculate_cell_centers()
 cmodel = gml.Model(global_settings, x=cx, y=cy, z=cz)
 
 # generate partitions from point cloud interpolated to cell center model (x,y)
-layers = gml.load_structure_files(cmodel)
-faults = gml.load_structure_files(cmodel, "fault")
-seams = gml.load_structure_files(cmodel, "seam")
-
-# identify partitions an get a 3d data array
-partition_model_data = gml.generate_layer_partitions(
-    cmodel, layers
-)
-all_model_data, fault_model_data=gml.generate_special_partitions(
-    cmodel, faults, old_grid_data=partition_model_data, name="fault"
-)
-all_model_data, seam_model_data=gml.generate_special_partitions(
-    cmodel, seams, old_grid_data=all_model_data, name="seam"
-)
+layers, layer_elevs = gml.load_structure_files(cmodel)
+faults, fault_elevs = gml.load_structure_files(cmodel, "fault")
+seams, seams_elevs = gml.load_structure_files(cmodel, "seam")
 
 # mask the model into active and inactive zones by using a shapefile
-all_model_data, active_model_data=gml.generate_active_partitions(
-    cmodel, old_grid_data=all_model_data, name="active"
+all_model_data, active_model_data = gml.generate_active_partitions(
+    cmodel, name="active"
+)
+
+# identify partitions an get a 3d data array
+all_model_data, partition_model_data = gml.generate_layer_partitions(
+    cmodel, layers, old_grid_data=active_model_data
+)
+
+all_model_data, fault_model_data = gml.generate_special_partitions(
+    cmodel, faults, old_grid_data=all_model_data, name="fault"
+)
+all_model_data, seam_model_data = gml.generate_special_partitions(
+    cmodel, seams, old_grid_data=all_model_data, name="seam"
 )
 
 cell_ids, i_ids, j_ids, k_ids = gml.generate_model_cell_ids(cmodel)
@@ -110,6 +112,45 @@ gridToVTK(
     }
 )
 
+# a = np.asarray([fault_elevs[0]])
+# gridToVTK(
+    # global_settings.path_output_data + "model_xy",
+    # vtk_grid_x[0:1,:,:],
+    # vtk_grid_y[0:1,:,:],
+    # vtk_grid_z[0:1,:,:],
+    # cellData = {
+        # "interpolation": a
+    # }
+# )
+
+# a = np.asarray([fault_elevs[1]])
+# b = np.array([[a[0][i]] for i in range(0,a.shape[1])])
+# vtk_grid_x, vtk_grid_y, vtk_grid_z = gml.rotate_grid(model, b=model.y[0:1])
+
+# gridToVTK(
+    # global_settings.path_output_data + "model_xz",
+    # vtk_grid_x[:,0:1,:],
+    # vtk_grid_y[:,0:1,:],
+    # vtk_grid_z[:,0:1,:],
+    # cellData = {
+        # "interpolation": b
+    # }
+# )
+
+# a = np.asarray([fault_elevs[2]])
+# b = np.array([[a[0][i]] for i in range(0,a.shape[1])])
+# vtk_grid_x, vtk_grid_y, vtk_grid_z = gml.rotate_grid(model, a=model.x[0:1])
+
+# gridToVTK(
+    # global_settings.path_output_data + "model_yz",
+    # vtk_grid_x[:,:,0:1],
+    # vtk_grid_y[:,:,0:1],
+    # vtk_grid_z[:,:,0:1],
+    # cellData = {
+        # "interpolation": b
+    # }
+# )
+
 print("")
 print("")
 print("====================================")
@@ -126,14 +167,20 @@ print("")
 
 print("- Numpy array files with model data")
 
-FILENAME = global_settings.path_output_data + "model_all_data_numpy_array"
-np.savez_compressed(FILENAME, array1=all_model_data)
+FILENAME = global_settings.path_output_data + "model_main_data"
+np.savez_compressed(FILENAME, array1=all_model_data, cell_ids=cell_ids)
 print("\t* all:             " + FILENAME + ".npz")
 
-FILENAME = global_settings.path_output_data + "model_detail_data_numpy_array"
-np.savez_compressed(FILENAME, cellids=cell_ids, layers=partition_model_data, \
-faults=fault_model_data, seams=seam_model_data, active=active_model_data)
+FILENAME = global_settings.path_output_data + "model_detail_data"
+np.savez_compressed(FILENAME, array1=all_model_data, cell_ids=cell_ids,\
+layers=partition_model_data, faults=fault_model_data, seams=seam_model_data,\
+active=active_model_data)
 print("\t* details:        " + FILENAME + ".npz")
+
+FILENAME = global_settings.path_output_data + "model_coordinates"
+np.savez_compressed(FILENAME, x=vtk_grid_x, y=vtk_grid_y,\
+z=vtk_grid_z)
+print("\t* grid coordinates:             " + FILENAME + ".npz")
 
 print("")
 print("")

@@ -128,9 +128,9 @@ OPATH = "2_output/"
 ## ending with 90x 10 m element discretization in z direction
 # dz = np.append(dz, np.ones(90)*10)
 
-nx = 100
-ny = 100
-nz = 50
+nx = 40
+ny = 60
+nz = 10
 dx = np.asarray([MODELDIMENSION[0]/nx]*nx)
 dy = np.asarray([MODELDIMENSION[1]/ny]*ny)
 dz = np.asarray([MODELDIMENSION[2]/nz]*nz)
@@ -149,3 +149,7 @@ PARTITIONWIDTH = {}
 PARTITIONWIDTH["fault-01"] = 10
 PARTITIONWIDTH["fault-09"] = 10
 PARTITIONWIDTH["fault-12"] = 10
+
+# MODEL LAYER state  ##################################
+LAYERSTATE = {}
+

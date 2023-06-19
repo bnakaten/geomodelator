@@ -23,7 +23,7 @@ CSVCOLUMNS = ['x', 'y', 'z']
 ## delimiter in csv file
 CSVDELIMITER = ','
 ## header in csv file (1) or not (0)
-CSVHEADER = 1
+CSVHEADER = 0
 
 #    ====================================
 #        Model
@@ -52,19 +52,19 @@ CSVHEADER = 1
 #
 ## left lower front corner of the model
 MODELP1 = [
-3402850, 5770600, -50
+3402850, 5770600, -900
 ]
 
 ## right lower front corner of the model (MODELP2 and MODELP1 will be
 ## both used in case of a rotated model in contrary to a model with 
 ## boundaries parallel to the x, y and z Cartesian axes.
 MODELP2 = [
-3451400, 5770600, -50
+3451400, 5770600, -900
 ]
 
 ## x,y and z distance of the model
 MODELDIMENSION = [
-48550, 41420, 230
+48550, 41400, 1050
 ]
 
 ################################################################################
@@ -101,12 +101,13 @@ OPATH = "2_output/"
 ## Example 2:
 ## Define consistent discretization by using nx, ny and nz
 
-# nx = 10
-# ny = 10
-# nz = 10
-# dx = np.asarray([(XN-XO)/(nx)]*(nx))
-# dy = np.asarray([(YN-YO)/(ny)]*(ny))
-# dz = np.asarray([(ZN-ZO)/(nz)]*(nz))
+nx = int((MODELDIMENSION[0])/500)
+ny = int((MODELDIMENSION[1])/500)
+nz = int((MODELDIMENSION[2])/10)
+
+dx = np.asarray([(MODELDIMENSION[0])/(nx)]*(nx))
+dy = np.asarray([(MODELDIMENSION[1])/(ny)]*(ny))
+dz = np.asarray([(MODELDIMENSION[2])/(nz)]*(nz))
 
 ## Example 3:
 ## Define by numpy array files
@@ -135,40 +136,6 @@ OPATH = "2_output/"
 ## ending with 90x 10 m element discretization in z direction
 # dz = np.append(dz, np.ones(90)*10)
 
-# nx = 50
-# ny = 50
-# nz = 40
-# dx = np.asarray([MODELDIMENSION[0]/nx]*nx)
-# dy = np.asarray([MODELDIMENSION[1]/ny]*ny)
-# dz = np.asarray([MODELDIMENSION[2]/nz]*nz)
-nx = 5
-dx = np.ones(nx)*[MODELDIMENSION[0]/8/nx]
-nx = 20
-dx = np.append(dx, np.ones(nx)*[MODELDIMENSION[0]/8/nx])
-nx = 5
-dx = np.append(dx, np.ones(nx)*[MODELDIMENSION[0]/8/nx])
-nx = 5
-dx = np.append(dx, np.ones(nx)*[MODELDIMENSION[0]/8/nx])
-nx = 20
-dx = np.append(dx, np.ones(nx)*[MODELDIMENSION[0]/4/nx])
-nx = 5
-dx = np.append(dx, np.ones(nx)*[MODELDIMENSION[0]/8/nx])
-nx = 5
-dx = np.append(dx, np.ones(nx)*[MODELDIMENSION[0]/8/nx])
-
-ny = 5
-dy = np.ones(ny)*[MODELDIMENSION[1]/8/ny]
-ny = 5
-dy = np.append(dy, np.ones(ny)*[MODELDIMENSION[1]/2/ny])
-ny = 5
-dy = np.append(dy, np.ones(ny)*[MODELDIMENSION[1]/8/ny])
-ny = 20
-dy = np.append(dy, np.ones(ny)*[MODELDIMENSION[1]/8/ny])
-ny = 20
-dy = np.append(dy, np.ones(ny)*[MODELDIMENSION[1]/8/ny])
-
-nz = 40
-dz = np.asarray([MODELDIMENSION[2]/nz]*nz)
 
 
 # MODEL FAULT AND SEAM PARAMETER ##################################
@@ -184,3 +151,23 @@ PARTITIONWIDTH = {}
 PARTITIONWIDTH["fault-01"] = 10
 PARTITIONWIDTH["fault-09"] = 10
 PARTITIONWIDTH["fault-12"] = 10
+
+
+# MODEL LAYER state  ##################################
+
+LAYERSTATE = {}
+
+## Use this array for to add layer state.
+##
+## Layer := Layer is a point cloud of a geological formation surface. Surface
+##          mean only the upper or lower boundary point cloud to the neigboring
+##          geolocial formation.
+##
+## Layers with a higher number can be understood as older geological formation
+## surfaces, eg. layer-03 is younger then layer-04. In case of no geological
+## erosion or sedimentation the layer state (LAYERSTATE) can be used to give
+## a layer priority. Default is 0, that mean younger layer have higher priority.
+## Set an older layer as a continuious layer (high priority) use state equal 1.
+##
+# LAYERSTATE["layer-01"] = 0
+# LAYERSTATE["layer-02"] = 1

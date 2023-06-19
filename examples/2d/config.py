@@ -142,3 +142,27 @@ PARTITIONWIDTH = {}
 PARTITIONWIDTH["fault-01"] = 10
 PARTITIONWIDTH["fault-09"] = 10
 PARTITIONWIDTH["fault-12"] = 10
+
+
+# MODEL LAYER state  ##################################
+
+LAYERSTATE = {}
+
+## Use this array for to add layer state.
+##
+## Layer := Layer is a point cloud of a geological formation surface. Surface
+##          mean only the upper or lower boundary point cloud to the neigboring
+##          geolocial formation.
+##
+## Layers with a higher number can be understood as older geological formation
+## surfaces, eg. layer-03 is younger then layer-04. In case of no geological
+## erosion or sedimentation the layer state (LAYERSTATE) can be used to give
+## a layer priority. Default is 0, that mean younger layer have higher priority.
+## Set an older layer as a continuious layer (high priority) use state equal 1.
+##
+LAYERSTATE["layer-01"] = 0
+LAYERSTATE["layer-02"] = 1
+LAYERSTATE["layer-03"] = 1
+# LAYERSTATE["layer-04"] = 1
+# LAYERSTATE["layer-05"] = 0
+# LAYERSTATE["layer-06"] = 1

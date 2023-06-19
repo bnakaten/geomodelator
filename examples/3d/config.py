@@ -61,10 +61,10 @@ MODELP1 = [3000, 6500, -2000]
 ## right lower front corner of the model (MODELP2 and MODELP1 will be
 ## both used in case of a rotated model in contrary to a model with 
 ## boundaries parallel to the x, y and z Cartesian axes.
-MODELP2 = [3000, 6500, -2000]
+MODELP2 = [10000, 6500, -2000]
 
 ## x,y and z distance of the model
-MODELDIMENSION = [7000, 18500, 2000]
+MODELDIMENSION = [3900, 11900, 2000]
 
 ################################################################################
 ##                  Skip the following lines until line 107 and do not change!!!
@@ -99,12 +99,24 @@ OPATH = "2_output/"
 ## Example 2:
 ## Define consistent discretization by using nx, ny and nz
 
-# nx = 10
-# ny = 10
-# nz = 10
-# dx = np.asarray([(XN-XO)/(nx)]*(nx))
-# dy = np.asarray([(YN-YO)/(ny)]*(ny))
-# dz = np.asarray([(ZN-ZO)/(nz)]*(nz))
+nx = 40
+ny = 80
+nz = 40
+dx = np.asarray([MODELDIMENSION[0]/nx]*nx)
+
+# dy = np.asarray([MODELDIMENSION[1]/ny]*ny)
+r = int(MODELDIMENSION[1]/ny)
+dy = np.ones(5)*(r*4)
+dy = np.append(dy, np.ones(4)*(r*2))
+dy = np.append(dy, np.ones(34)*r)
+dy = np.append(dy, np.ones(4)*(r*2))
+dy = np.append(dy, np.ones(2)*(r*4))
+
+# dz = np.asarray([MODELDIMENSION[2]/nz]*nz)
+r = int(MODELDIMENSION[2]/nz)
+dz = np.ones(6)*(r*2)
+dz = np.append(dz, np.ones(20)*r)
+dz = np.append(dz, np.ones(4)*(r*2))
 
 ## Example 3:
 ## Define by numpy array files
@@ -133,9 +145,9 @@ OPATH = "2_output/"
 ## ending with 90x 10 m element discretization in z direction
 # dz = np.append(dz, np.ones(90)*10)
 
-dx = np.load(CALLDIR + IPATH + 'dx.npy')
-dy = np.load(CALLDIR + IPATH + 'dy.npy')
-dz = np.load(CALLDIR + IPATH + 'dz.npy')
+# dx = np.load(CALLDIR + IPATH + 'dx.npy')
+# dy = np.load(CALLDIR + IPATH + 'dy.npy')
+# dz = np.load(CALLDIR + IPATH + 'dz.npy')
 
 
 # MODEL FAULT AND SEAM PARAMETER ##################################
@@ -151,3 +163,8 @@ PARTITIONWIDTH = {}
 PARTITIONWIDTH["fault-01"] = 10
 PARTITIONWIDTH["fault-09"] = 10
 PARTITIONWIDTH["fault-12"] = 10
+
+# MODEL LAYER state  ##################################
+LAYERSTATE = {}
+
+# LAYERSTATE["layer-01"] = 0
