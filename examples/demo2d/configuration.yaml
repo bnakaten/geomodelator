@@ -1,0 +1,76 @@
+config:
+  base: examples/demo2d/
+  csv:
+    columns:
+    - x
+    - z
+    - y
+    compress: true
+    delimiter: ','
+    header: 1
+  file: configuration.yaml
+  inputPath: ''
+  modelFileVtk: model.vts
+  outputPath: ''
+  shapePath: ''
+
+model:
+  3d: false
+  cellNumberX: 100
+  cellNumberY: 1
+  cellNumberZ: 40
+  cornerPoint1:
+  - -3800
+  - -1440
+  - 500
+  cornerPoint2:
+  - -2600
+  - -1440
+  - 500
+  dimension:
+  - 1200
+  - 20
+  - 1200
+  discretisationType: n
+  partitionId:
+    all: 0
+    default: 1
+    fault-01: 4
+    fault-05: 5
+    fault-08: 6
+    layer-01: 2
+    layer-09: 3
+    seam-01: 7
+    seam-02: 8
+  structureRank:
+    fault-01: 0
+    fault-05: 0
+    fault-08: 0
+    layer-01: 0
+    layer-09: 0
+    seam-01: 0
+    seam-02: 0
+  structureWidth:
+    fault-01: 40
+    fault-05: 40
+    fault-08: 40
+    seam-01: 40
+    seam-02: 40
+structure:
+  extension:
+  file:
+  - layer-01.csv
+  - layer-09.csv
+  - fault-01.csv
+  - fault-05.csv
+  - fault-08.csv
+  - seam-01.csv
+  - seam-02.csv
+  type:
+  - layer
+  - layer
+  - fault
+  - fault
+  - fault
+  - fault
+  - fault

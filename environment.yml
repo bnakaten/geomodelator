@@ -1,11 +1,13 @@
-name: geomodelator
+# environment.yml
+
+name: gml
 channels:
   - conda-forge
 dependencies:
-  - ipython
+  - gdal
+  - geos
   - matplotlib
   - numpy
-  - gdal
-  - pyevtk
   - pyvista
+  - pyyaml
   - scipy

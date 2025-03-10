@@ -1,1348 +1,1569 @@
-# License: GNU General Public License, Version 3, 29 June 2007
-# Copyright © 2022 Helmholtz Centre Potsdam GFZ German Research Centre for
-# Geosciences, Potsdam, Germany
-
-#!/usr/bin/env python
-# coding: utf-8
-
 '''
 GEOMODELATOR library file
 '''
+
+import csv
+import json
 import os
+import re
 import sys
 import glob
 import math
-
 import numpy as np
 
 from scipy.interpolate import griddata
-from scipy.spatial.qhull import Delaunay
+
+from scipy.interpolate import interpn
 
 from osgeo import ogr, gdal
 
-from pyevtk.hl import unstructuredGridToVTK, pointsToVTK
-
 import pyvista as pv
 
-# CLASSES AND FUNCTIONS ########################################################
-class Settings():
-    '''
-        Data structure for global settings
-    '''
-    # global static variable
-    s3d = True
-    path_input_data = ''
-    path_output_data = ''
-    csv_columns = None
-    csv_header = 1
-    csv_delimiter = ','
-    model_p1 = None
-    model_p2 = None
-    model_b1 = None
-    model_b2 = None
-    model_p8 = None
-    model_dimension = None
-    partition_width = None
-    layer_state = None
-    dx = None
-    dy = None
-    dz = None
+import logging
 
-    # global cache variable
-    rotation_angle = 0
-    partition_number = 1
+import yaml
+
+logging.basicConfig(stream=sys.stderr, level=logging.DEBUG)
+#logging.basicConfig(stream=sys.stderr, level=logging.WARNING)
+
+
+class Configuration:
+    def __init__(self):
+        self.modelGrid()
+        self.dataLocation()
+        self.csvFormat()
+        self.partitionDetails()
+        self.feature()
+
+    def modelGrid(
+        self,
+        modelTyp3d=True,
+        cornerPoint1=[.0,.0,.0],
+        cornerPoint2=[.2,.0,.0],
+        modelDimension=[.5,.0,.0],
+        discretisationX=None,
+        discretisationY=None,
+        discretisationZ=None,
+        cellNumberX=1,
+        cellNumberY=1,
+        cellNumberZ=1,
+    ):
+        self.modelType3d = modelTyp3d
+        self.cornerPoint1 = cornerPoint1
+        self.cornerPoint2 = cornerPoint2
+        self.modelDimension = modelDimension
+        self.discretisationX = discretisationX
+        self.discretisationY = discretisationY
+        self.discretisationZ = discretisationZ
+        self.cellNumberX = cellNumberX
+        self.cellNumberY = cellNumberY
+        self.cellNumberZ = cellNumberZ
+
+    def dataLocation(
+        self,
+        inputPath="",
+        outputPath="",
+        shapeFilePath="",
+        modelFileVtk='model.vts',
+    ):
+        self.inputPath = inputPath
+        self.outputPath = outputPath
+        self.shapeFilePath = shapeFilePath
+        self.modelFileVtk = modelFileVtk
+
+    def csvFormat(
+        self,
+        columns=['x','y','z'],
+        header=1,
+        delimiter=',',
+    ):
+        self.csvColumns = columns
+        self.csvHeader = int(header)
+        self.csvDelimiter = delimiter
+
+    def partitionDetails(
+        self,
+        structureWidth={},
+        structureRank={},
+        partitionCounter=0,
+    ):
+        self.structureWidth = structureWidth
+        self.structureRank = structureRank
+        self.partitionCounter = partitionCounter
+
+    def feature(
+        self,
+        structureFileList=[],
+        structureTypeList=[],
+        structureExtensionList=[],
+        maskFileName='mask.tiff',
+        part={},
+        rotationAngle=.0,
+        modelExtensionWith=15.,
+    ):
+        self.maskFileName = maskFileName
+        self.partitionList = ParitionList()
+        self.structureFileList = structureFileList
+        self.structureExtensionList = structureExtensionList
+
+        self.structureTypeList = structureTypeList
+        self.part = part
+        self.rotationAngle = rotationAngle
+        self.modelExtensionWith = modelExtensionWith
+
+
+class Model:
+    def __init__(
+        self,
+        configuration: Configuration,
+        ):
+        self.configuration = configuration
+
+        if self.configuration.rotationAngle == 0:
+            self.configuration.rotationAngle = Helper.calculate_full_angle(
+                self.configuration.cornerPoint2,
+                self.configuration.cornerPoint1,
+            )
+
+
+    def generateGridPoints(
+            self
+        ):
+        x = np.zeros(len(self.configuration.discretisationX)+1)
+        y = np.zeros(len(self.configuration.discretisationY)+1)
+        z = np.zeros(len(self.configuration.discretisationZ)+1)
+
+        x[0] = 0
+
+        for i, value in enumerate(self.configuration.discretisationX):
+            x[i+1] = value + x[i]
+
+        self.x = x
+
+        y[0] = 0
+
+        for i, value in enumerate(self.configuration.discretisationY):
+            y[i+1] = value + y[i]
+
+        self.y = y
+
+        z[0] = 0
+
+        for i, value in enumerate(self.configuration.discretisationZ):
+            z[i+1] = value + z[i]
+
+        self.z = z
+
+        logging.info("====================================")
+        logging.info("\tModel")
+        logging.info("====================================")
+        logging.info("                          nx                   ")
+        logging.info("                  P8                P7         ")
+        logging.info("                 +-----------------+           ")
+        logging.info("           ny   /|                /|           ")
+        logging.info("               / |               / |           ")
+        logging.info("           P5 /  |           P6 /  |   nz      ")
+        logging.info("             +-----------------+   |           ")
+        logging.info("             |   |             |   |           ")
+        logging.info("             |   |             |   |           ")
+        logging.info("             |   |P4           |   |P3         ")
+        logging.info("             |   +-------------|---+           ")
+        logging.info("             |  /              |  /            ")
+        logging.info("             | /               | /             ")
+        logging.info("             |/                |/              ")
+        logging.info("             +-----------------+               ")
+        logging.info("           P1                 P2               ")
+
+        logMessage = f"({self.configuration.cornerPoint1[0]}," + \
+            f"{self.configuration.cornerPoint1[1]}," + \
+            f"{self.configuration.cornerPoint1[2]})"
+        logging.info("Origin coordinate (= P1 original) (x, y, z): " + logMessage)
+
+        logMessage = f"({len(self.configuration.discretisationX)}, "+ \
+            f"{len(self.configuration.discretisationY)}, " + \
+            f"{len(self.configuration.discretisationZ)})"
+        logging.info("Discretisation (nx, ny, nz): " + logMessage)
+
+        logging.info("Normalized model corner coordinates (x, y, z):")
+        logging.info(f"\tP1 ({self.x[0]}, {self.y[0]}, {self.z[0]})")
+        logging.info(f"\tP2 ({self.x[-1]}, {self.y[0]}, {self.z[0]})")
+        logging.info(f"\tP3 ({self.x[-1]}, {self.y[-1]}, {self.z[0]})")
+        logging.info(f"\tP4 ({self.x[0]}, {self.y[-1]}, {self.z[0]})")
+        logging.info(f"\tP5 ({self.x[0]}, {self.y[0]}, {self.z[-1]})")
+        logging.info(f"\tP6 ({self.x[-1]}, {self.y[0]}, {self.z[-1]})")
+        logging.info(f"\tP7 ({self.x[-1]}, {self.y[-1]}, {self.z[-1]})")
+        logging.info(f"\tP8 ({self.x[0]}, {self.y[-1]}, {self.z[-1]})")
+
+        numberOfCells = len(self.configuration.discretisationX)*\
+            len(self.configuration.discretisationY)*\
+            len(self.configuration.discretisationZ)
+        logging.info(f"\tNumber off cells/elements: {numberOfCells}")
+
+
+        logging.info("Rotation angle: " + \
+            f"{np.degrees(self.configuration.rotationAngle).round()}")
+
+        self.complete()
+
+
+    def complete(self):
+        self.nx = len(self.x)
+        self.ny = len(self.y)
+        self.nz = len(self.z)
+
+
+class CenterPointModel(Model):
+    def generateGridPoints(
+            self,
+            cornerPointModel: Model,
+        ):
+        self.x = np.zeros(len(cornerPointModel.x)-1)
+        self.y = np.zeros(len(cornerPointModel.y)-1)
+        self.z = np.zeros(len(cornerPointModel.z)-1)
+
+        self.x[:] = (cornerPointModel.x[1:] + cornerPointModel.x[:-1])/2
+        self.y[:] = (cornerPointModel.y[1:] + cornerPointModel.y[:-1])/2
+        self.z[:] = (cornerPointModel.z[1:] + cornerPointModel.z[:-1])/2
+
+        self.complete()
+
+
+class StructureList:
+    def __init__(
+        self,
+        a = None,
+        orientation = None,
+        option = None,
+        type = 'layer'
+        ):
+        self.A = a
+        self.orientation = orientation
+        self.option = option
+        self.type = type
+        self.id = 0
+
+
+class ParitionList:
+    def __init__(
+        self,
+        id=None,
+        name=None,
+        modelA=None,
+        modelB=None,
+        ):
+        self.id = id
+        self.name = name
+        self.modelA = modelA
+        self.modelB = modelB
+
+
+class IndexStepControl:
+    '''
+        Data structure to hold the moving vector for the parition check
+    '''
+    def __init__(
+            self,
+            vectorDirection,
+            vectorI,
+            vectorJ,
+            vectorK
+        ):
+        ## vector direction
+        self.vd = vectorDirection
+        ## vector i switch
+        self.vi = vectorI
+        ## vector j switch
+        self.vj = vectorJ
+        ## vector k switch
+        self.vk = vectorK
+
+
+class Helper:
+
+    # load_and_organize_point_cloud_data
+    @staticmethod
+    def loadAndOrganizeStructureFileData(
+        model: CenterPointModel,
+        filename: str
+        ):
+        '''
+            Load point cloud from text file
+        '''
+        data = None
+
+        extensions = ['.csv', '.asc', '.txt', '.tmp', '.xyz']
+
+        if filename.lower().endswith(tuple(extensions)):
+            columns = []
+
+            if filename.split(".")[-1] == 'asc':
+                model.configuration.csvHeader = 1
+                model.configuration.csvDelimiter = " "
+
+                with open(filename, "rt") as f:
+                    csvReader = csv.reader(f)
+                    header = next(csvReader)
+                    model.configuration.csvColumns = header[-1].split(
+                        model.configuration.csvDelimiter
+                    )[1:]
+
+
+            if 'x' in model.configuration.csvColumns:
+                x_id = list(model.configuration.csvColumns).index('x')
+                columns.append(x_id)
+
+            if 'y' in model.configuration.csvColumns:
+                y_id = list(model.configuration.csvColumns).index('y')
+                columns.append(y_id)
+
+            if 'z' in model.configuration.csvColumns:
+                z_id = list(model.configuration.csvColumns).index('z')
+                columns.append(z_id)
+
+            try:
+                logging.info(f"-> {filename}")
+                data = np.genfromtxt(
+                    filename,
+                    skip_header = model.configuration.csvHeader,
+                    delimiter = model.configuration.csvDelimiter,
+                    usecols = tuple(columns)
+                )
+
+            except ValueError:
+                logging.info(
+                    'Please check if the csv file column number and the csv \
+                    column oder array fit together.'
+                )
+                raise
+
+        return data
+
+
+    @staticmethod
+    def loadPointCloudFiles(filename):
+        '''
+            Load point cloud from text file
+        '''
+
+        data = None
+        if filename.lower().endswith('.tmp'):
+            data = np.genfromtxt(filename, skip_header=1,  delimiter=',')
+        elif filename.lower().endswith('.asc'):
+            data = np.genfromtxt(filename, skip_header=1,  delimiter=' ')
+
+        return data
+
+
+    @staticmethod
+    def calculate_full_angle(P, origin):
+        '''
+            Calculate full angle (360 degrees) between two points
+        '''
+        return math.radians(
+            math.atan2(P[1] - origin[1],
+            P[0] - origin[0]) * (180.0 / math.pi)
+        )
+
+
+    @staticmethod
+    def rotateCoordianteAroundOrigin(model, P, clockwise=-3):
+        '''
+            Rotate all points in list by rotation angle in origin
+        '''
+        # rotate x and y coordinates clockwise
+        x = (P[0] * math.cos(clockwise*model.configuration.rotationAngle)) +\
+                (P[1] * math.sin(clockwise*model.configuration.rotationAngle))
+        y = -(P[0] * math.sin(clockwise*model.configuration.rotationAngle)) +\
+                (P[1] * math.cos(clockwise*model.configuration.rotationAngle))
+        P = [x, y, P[2]]
+
+        return P
+
+
+    @staticmethod
+    def shiftCoordinateToOrigin(P, origin):
+        '''
+            Shift list of points into origin
+        '''
+        return [P[i] - origin[i] for i in range(3)]
+
+
+    @staticmethod
+    def interpolatePlane(
+        xyGrid,
+        vectorX,
+        vectorY,
+        indexing='xy',
+        method=2,
+        ):
+        '''
+            Method to interpolate a surface to plane (e.g. xy or yz or xz).
+        '''
+        interp_method = ['nearest', 'linear', 'cubic']
+
+        coords = (xyGrid[:,0], xyGrid[:,1])
+        values = xyGrid[:,2]
+
+        x_grid, y_grid = np.meshgrid(vectorX, vectorY, indexing=indexing)
+
+
+        try:
+            grid = griddata(
+                coords,
+                values,
+                (x_grid, y_grid),
+                method=interp_method[method]
+            )
+
+            if np.isnan(grid).all():
+                grid = None
+
+        except ValueError:
+            grid = None
+
+        return grid
+
+
+    def rotateModel(
+        self,
+        model: Model,
+        a=None,
+        b=None,
+        c=None,
+        indexing='ij',
+        ):
+        '''
+            Rotate model by rotation angle
+        '''
+
+        if a is None:
+            a = model.x
+
+        if b is None:
+            b = model.y
+
+        if c is None:
+            c = model.z
+
+        z_matrix, y_matrix, x_matrix = np.meshgrid(
+            c,
+            b,
+            a,
+            indexing=indexing
+        )
+
+        z_list = [item for layer in z_matrix for row in layer for item in row]
+        y_list = [item for layer in y_matrix for row in layer for item in row]
+        x_list = [item for layer in x_matrix for row in layer for item in row]
+
+        coord_list = np.array(
+            [
+                [x_list[i],y_list[i],z_list[i]] for i in range(len(x_list))
+            ]
+        )
+
+        if model.configuration.rotationAngle != 0:
+            coord_list = np.array(
+                [
+                    self.rotateCoordianteAroundOrigin(
+                        model, coord_list[i,:], clockwise=-1
+                    ) for i in range(len(coord_list))
+                ]
+            )
+
+        if model.configuration.cornerPoint1 != [0,0,0]:
+            coord_list =  np.array(
+                [
+                    self.shiftCoordinateToOrigin(
+                        coord_list[i,:],
+                        [-value for value in model.configuration.cornerPoint1]
+                    ) for i in range(len(coord_list))
+                ]
+            )
+
+        vtk_grid_x = np.array([coord[0] for coord in coord_list]).reshape((\
+                                len(c),len(b),len(a)))
+        vtk_grid_y = np.array([coord[1] for coord in coord_list]).reshape((\
+                                len(c),len(b),len(a)))
+        vtk_grid_z = np.array([coord[2] for coord in coord_list]).reshape((\
+                                len(c),len(b),len(a)))
+
+        return vtk_grid_x, vtk_grid_y, vtk_grid_z
+
+
+    @staticmethod
+    def normalizeGrid(self, model):
+        '''
+            Rotate model by rotation angle
+        '''
+        z_matrix, y_matrix, x_matrix = np.meshgrid(
+            model.z,
+            model.y,
+            model.x,
+            indexing='ij'
+        )
+
+        z_list = [item for layer in z_matrix for row in layer for item in row]
+        y_list = [item for layer in y_matrix for row in layer for item in row]
+        x_list = [item for layer in x_matrix for row in layer for item in row]
+
+        coord_list = np.array(
+            [
+                [x_list[i],y_list[i],z_list[i]] for i in range(len(x_list))
+            ]
+        )
+
+        vtk_grid_x = np.array([coord[0] for coord in coord_list]).reshape((\
+                                len(model.z),len(model.y),len(model.x)))
+        vtk_grid_y = np.array([coord[1] for coord in coord_list]).reshape((\
+                                len(model.z),len(model.y),len(model.x)))
+        vtk_grid_z = np.array([coord[2] for coord in coord_list]).reshape((\
+                                len(model.z),len(model.y),len(model.x)))
+
+        return vtk_grid_x, vtk_grid_y, vtk_grid_z
+
+
+    @staticmethod
+    def convert2dTo3dData(model, points):
+        '''
+            Convert 2d csv data to 2d+/3d data
+        '''
+        ## convert 2d data to interpolatable 3d data
+        third_column = np.full(
+            len(points[:,0]),
+            -(model.configuration.modelDimension[1]/2) \
+                -model.configuration.modelExtensionWith
+        )
+        missing_column = 0
+
+        if 'x' not in model.configuration.csvColumns:
+            points = np.column_stack((third_column,points))
+        elif 'y' not in model.configuration.csvColumns:
+            column_x = points[:,0]
+            column_z = points[:,1]
+            points = np.column_stack((column_x,third_column))
+            points = np.column_stack((points,column_z))
+            missing_column = 1
+        elif 'z' not in model.configuration.csvColumns:
+            points = np.column_stack((points,third_column))
+            missing_column = 2
+
+        # add to data a copy of the existing data with shifted 3rd coordinate to 100
+        tmp_points = np.copy(points)
+        tmp_points[:,missing_column] += (
+            model.configuration.modelDimension[1] +model.configuration.modelExtensionWith
+        )
+        return np.vstack((points,tmp_points))
+
+
+    # @staticmethod
+    def pointsToPyvistaSurface(self, model, filename, x, y, z):
+        '''
+            Create vtk output of layers, faults or seams
+        '''
+
+        status = True
+        points = np.zeros( (len(x), 3) )
+        for i, x_value in enumerate(x):
+            points[i,0] = x_value
+            points[i,1] = y[i]
+            try:
+                points[i,2] = z[i]
+            except:
+                points[i,2] = None
+                pass
+
+        points = points[~np.isnan(points).any(axis=1),:]
+
+        if model.configuration.rotationAngle != 0:
+            points = np.array(
+                [
+                    self.rotateCoordianteAroundOrigin(model, points[i,:], clockwise=-1)
+                    for i in range(len(points))
+                ]
+            )
+
+        if model.configuration.cornerPoint1 != [0,0,0]:
+            points =  np.array(
+                [
+                    self.shiftCoordinateToOrigin(
+                        points[i,:],
+                        [-value for value in model.configuration.cornerPoint1]
+                    )
+                    for i in range(len(points))
+                ]
+            )
+
+        try:
+            points = points[~np.isnan(points).any(axis=1),:]
+            vtk_filename = filename + ".vtk"
+            pcl = pv.PolyData(points)
+            mesh = pcl.delaunay_2d(tol=1e-02)
+            #mesh = pcl.delaunay_3d().extract_surface()
+            mesh.save(vtk_filename)
+        except:
+            pass
+
+
+        return status
+
+
+    @staticmethod
+    def pyConfToJson(confFile):
+        variables = {}
+
+        # Regular expression to match variable assignments
+        pattern = r'(\w+)\s*=\s*(.+)'
+
+        with open(confFile, 'r') as file:
+            for line in file:
+                # Match variable assignments
+                match = re.match(pattern, line.strip())
+                if match:
+                    variable_name, value = match.groups()
+                    # Try to evaluate the value and store it in the dictionary
+                    try:
+                        value = eval(value)
+                        variables[variable_name] = value
+                    except:
+                        # If evaluation fails, store the value as a string
+                        variables[variable_name] = value
+
+        configuration = {}
+        for key, value in variables.items():
+            if key == 'CALLDIR':
+                configuration['config'] = {}
+                configuration['config']['base'] = value
+                configuration['config']['shapePath'] = ''
+
+            elif key == 'S3D':
+                configuration['model'] = {}
+                configuration['model']['3d'] = value
+
+            elif key == 'IPATH':
+                configuration['config']['inputPath'] = value
+
+            elif key == 'OPATH':
+                configuration['config']['outputPath'] = value
+
+            elif key == 'SPATH':
+                configuration['config']['shapePath'] = value
+
+            elif key == 'CSVCOLUMNS':
+                configuration['config']['csv'] = {}
+                configuration['config']['csv']['columns'] = value
+
+            elif key == 'CSVDELIMITER':
+                configuration['config']['csv']['delimiter'] = value
+
+            elif key == 'CSVHEADER':
+                configuration['config']['csv']['header'] = value
+
+            elif key == 'MODELP1':
+                configuration['model']['cornerPoint1'] = value
+
+            elif key == 'MODELP2':
+                configuration['model']['cornerPoint2'] = value
+
+            elif key == 'MODELDIMENSION':
+                configuration['model']['dimension'] = value
+
+            elif key == 'nx':
+                configuration['model']['cellNumberX'] = value
+                configuration['model']['discretizationType'] = "n"
+
+            elif key == 'ny':
+                configuration['model']['cellNumberY'] = value
+
+            elif key == 'nz':
+                configuration['model']['cellNumberZ'] = value
+
+            elif key == 'dx':
+                print("The conversion of dx is not possible automaticaly! Please enter the real dx values as numerical values in the configuration file and name them \"DX\". e.g. \"DX = [10, 20, 10, 5, 5]\". The original variable dx must be removed or commented out.")
+                sys.exit(1)
+            elif key == 'DX':
+                configuration['model']['discretizationX'] = value
+                configuration['model']['discretizationType'] = "d"
+
+            elif key == 'dy':
+                print("The conversion of dy is not possible automaticaly! Please enter the real dx values as numerical values in the configuration file and name them \"DY\". e.g. \"DY = [10, 20, 10, 5, 5]\". The original variable dy must be removed or commented out.")
+                sys.exit(1)
+            elif key == 'DY':
+                configuration['model']['discretizationY'] = value
+
+            elif key == 'dz':
+                print("The conversion of dz is not possible automaticaly! Please enter the real dx values as numerical values in the configuration file and name them \"DZ\". e.g. \"DZ = [10, 20, 10, 5, 5]\".  The original variable dz must be removed or commented out.")
+                sys.exit(1)
+            elif key == 'DZ':
+                configuration['model']['discretizationZ'] = value
+
+        fileList = Helper.loadFileList(
+            configuration['config']['base'] + configuration['config']['inputPath']
+        )
+
+        configuration['structure'] = {}
+        configuration['structure']['file'] = fileList
+
+
+        return json.dumps(configuration, indent=4);
+
+
+    @staticmethod
+    def loadFileList(directory):
+        fileList = []
+        for filename in os.listdir(directory):
+            if os.path.isfile(os.path.join(directory, filename)):
+                fileList.append(filename)
+        return fileList
+
+
+    @staticmethod
+    def yamlToJson(yamlFile):
+        with open(yamlFile, 'r') as yamlFile:
+            yamlData = yaml.safe_load(yamlFile)
+
+        return json.dumps(yamlData, indent=4)
+
+    @staticmethod
+    def loadJson(jsonFile):
+        with open(jsonFile, 'r') as jsonFile:
+            jsonData = json.load(jsonFile)
+
+        return json.dumps(jsonData, indent=4)
+
+
+class Partitioning(Helper):
 
     def __init__(
         self,
-        s3d,
-        csv_columns,
-        model_p1,
-        model_p2,
-        model_dimension,
-        partition_width,
-        layer_state,
-        dx,
-        dy,
-        dz,
-        path_input_data="1_input/",
-        path_output_data="2_output/",
-        path_shape_data="1_input/shapefiles/",
-        mask_file='model_mask_raster.tif'
+        model: Model
     ):
-        self.s3d = s3d
-        self.csv_columns = csv_columns
-        self.model_p1 = model_p1
-        self.model_p2 = model_p2
-        self.model_dimension = model_dimension
-        self.partition_width = partition_width
-        self.layer_state = layer_state
-        self.dx = dx
-        self.dy = dy
-        self.dz = dz
-
-        self.path_input_data = path_input_data
-        self.path_shape_data = path_shape_data
-        self.path_output_data = path_output_data
-
-        self.mask_file = mask_file
+        self.model = model
 
 
-class Model():
-    '''
-        Model holds all important data
-    '''
-    settings = None
-    x = None
-    y = None
-    z = None
-
-    def __init__(self, settings, x=None, y=None, z=None):
+    def partitionateModel(
+        self,
+        model: CenterPointModel,
+        structureType='layer',
+        vtk=True,
+        filenameList=None,
+        filenameType=None
+    ):
         '''
-            Constructor for Model class.
+            Load text files containing layer, fault or seam point cloud data
         '''
-        self.settings = settings
+        layers = StructureList(type=structureType)
+        layers.A = {}
+        layers.orientation = {}
+        layers.fileType = {}
+        layers.id = 0
+        i = 0
 
-        if x is None:
-            x = np.zeros(len(self.settings.dx)+1)
-            y = np.zeros(len(self.settings.dy)+1)
-            z = np.zeros(len(self.settings.dz)+1)
+        filenameMappingList = {}
 
-            x[0] = 0
-            y[0] = 0
-            z[0] = 0
+        all_elevs = None
 
-            for i, value in enumerate(self.settings.dx):
-                x[i+1] = value + x[i]
+        logging.info(f"Process point {structureType} cloud files ...")
 
-            for i, value in enumerate(self.settings.dy):
-                y[i+1] = value + y[i]
 
-            for i, value in enumerate(self.settings.dz):
-                z[i+1] = value + z[i]
-
-            self.x = x
-            self.y = y
-            self.z = z
-
-            print("\n====================================")
-            print("\tModel")
-            print("====================================")
-            print("                          nx                   ")
-            print("                  P8                P7         ")
-            print("                 +-----------------+           ")
-            print("           ny   /|                /|           ")
-            print("               / |               / |           ")
-            print("           P5 /  |           P6 /  |   nz      ")
-            print("             +-----------------+   |           ")
-            print("             |   |             |   |           ")
-            print("             |   |             |   |           ")
-            print("             |   |P4           |   |P3         ")
-            print("             |   +-------------|---+           ")
-            print("             |  /              |  /            ")
-            print("             | /               | /             ")
-            print("             |/                |/              ")
-            print("             +-----------------+               ")
-            print("           P1                 P2               ")
-            print("                                               \n")
-            print("Origin coordinate (= P1 original) (x, y, z): (", end="")
-            print(f"{self.settings.model_p1[0]},", end="")
-            print(f"{self.settings.model_p1[1]},", end="")
-            print(f"{self.settings.model_p1[2]})")
-            print("Discretization (nx, ny, nz): (", end="")
-            print(f"{len(self.settings.dx)}, ", end="")
-            print(f"{len(self.settings.dy)}, ", end="")
-            print(f"{len(self.settings.dz)})\n")
-            print("!Normalized model corner coordinates (x, y, z):")
-            print(f"\tP1 ({self.x[0]}, {self.y[0]}, {self.z[0]})")
-            print(f"\tP2 ({self.x[-1]}, {self.y[0]}, {self.z[0]})")
-            print(f"\tP3 ({self.x[-1]}, {self.y[-1]}, {self.z[0]})")
-            print(f"\tP4 ({self.x[0]}, {self.y[-1]}, {self.z[0]})")
-            print(f"\tP5 ({self.x[0]}, {self.y[0]}, {self.z[-1]})")
-            print(f"\tP6 ({self.x[-1]}, {self.y[0]}, {self.z[-1]})")
-            print(f"\tP7 ({self.x[-1]}, {self.y[-1]}, {self.z[-1]})")
-            print(f"\tP8 ({self.x[0]}, {self.y[-1]}, {self.z[-1]})\n")
-            self.settings.model_p8 = [self.x[0], self.y[-1], self.z[-1]]
-            self.settings.model_b1 = [self.x[0], self.y[0], self.z[0]]
-            self.settings.model_b2 = [self.x[-1], self.y[-1], self.z[-1]]
-
-            number_of_cells = len(self.settings.dx)*len(self.settings.dy)*\
-                len(self.settings.dz)
-            print(f"\n\n\tNumber off cells/elements: {number_of_cells}\n")
+        if filenameList:
+            filenameList = [(index, item) for index, item in enumerate(filenameList)]
+            filenameList = dict(filenameList)
         else:
-            if x is not None:
-                self.x = x
-                self.nx = len(x)
+            return layers, all_elevs
 
-            if y is not None:
-                self.y = y
-                self.ny = len(y)
+        for key, filename in filenameList.items():
 
-            if z is not None:
-                self.z = z
-                self.nz = len(z)
+            if key >= 0 and filenameType[key] != structureType:
+                continue
 
-                if self.settings.rotation_angle == 0:
-                    self.settings.rotation_angle = calculate_full_angle(
-                        self.settings.model_p2,
-                        self.settings.model_p1
-                    )
+            logging.info(model.configuration.inputPath + filename)
+            filename = os.path.basename(filename)
 
-                    print("Rotation angle: " + \
-                        f"{np.degrees(self.settings.rotation_angle).round()}\n")
+            if not os.path.exists(model.configuration.inputPath + filename):
+                continue
 
-
-    def calculate_cell_centers(self):
-        '''
-            Method to calculate cell/element center coordinates.
-        '''
-        return (self.x[1:] + self.x[:-1])/2, (self.y[1:] + self.y[:-1])/2, \
-                (self.z[1:] + self.z[:-1])/2
-
-class Layer_Set:
-    '''
-        Layer_Set class
-    '''
-    def __init__(self):
-        self._A = None
-        self._B = None
-        self._orientation = None
-        self._option = None
-
-
-    @property
-    def A(self):
-        ''' getter surface A '''
-        return self._A
-
-    @A.setter
-    def A(self, value):
-        ''' setter surface A '''
-        self._A = value
-
-    @property
-    def B(self):
-        ''' getter surface B '''
-        return self._B
-
-    @B.setter
-    def B(self, value):
-        ''' setter surface B '''
-        self._B = value
-
-    @property
-    def orientation(self):
-        ''' getter surface orientation '''
-        return self._orientation
-
-    @orientation.setter
-    def orientation(self, value):
-        ''' setter surface orientation '''
-        self._orientation = value
-
-    @property
-    def option(self):
-        ''' getter surface orientation '''
-        return self._option
-
-    @option.setter
-    def option(self, value):
-        ''' setter surface orientation '''
-        self._option = value
-
-class Partition_Table:
-    '''
-        Parition_Table class
-    '''
-    pname = None
-    mode1 = None
-    mode2 = None
-    pid = None
-
-def interpolate(data, x_vector, y_vector, indexing='xy', method=2):
-    '''
-        Method to interpolate a surface to plane (e.g. xy or yz or xz).
-    '''
-    interp_method = ['nearest', 'linear', 'cubic']
-
-    # coords = np.array([[data[i,0], data[i,1]] for i in range(len(data))])
-    # values = np.array(data[:,2])
-    coords = (data[:,0], data[:,1])
-    values = data[:,2]
-
-    x_grid, y_grid = np.meshgrid(x_vector, y_vector, indexing=indexing)
-
-    try:
-        grid = griddata(
-            coords,
-            values,
-            (x_grid, y_grid),
-            method=interp_method[method]
-        )
-    except ValueError:
-        grid = None
-
-    return grid
-
-
-def load_and_organize_point_cloud_data(cmodel, filename):
-    '''
-        Load point cloud from text file
-    '''
-    data = None
-
-    extensions = ['.csv', '.txt', '.tmp', '.xyz']
-
-    if filename.lower().endswith(tuple(extensions)):
-        columns = []
-
-        if 'x' in cmodel.settings.csv_columns:
-            x_id = list(cmodel.settings.csv_columns).index('x')
-            columns.append(x_id)
-
-        if 'y' in cmodel.settings.csv_columns:
-            y_id = list(cmodel.settings.csv_columns).index('y')
-            columns.append(y_id)
-
-        if 'z' in cmodel.settings.csv_columns:
-            z_id = list(cmodel.settings.csv_columns).index('z')
-            columns.append(z_id)
-
-        try:
-            print(f"-> {filename}")
-            data = np.genfromtxt(
-                filename,
-                skip_header = cmodel.settings.csv_header,
-                delimiter = cmodel.settings.csv_delimiter,
-                usecols = tuple(columns)
+            #### load xyz raster file
+            points = self.loadAndOrganizeStructureFileData(
+                    model,
+                    model.configuration.inputPath + filename
             )
 
-        except ValueError:
-            print('Please check if the csv file column number and the csv \
-                column oder array fit together.')
-            sys.exit()
+            # for 2d csv data
+            if str(0) in model.configuration.csvColumns:
+                points = self.convert2dTo3dData(model, points)
 
-
-    return data
-
-def load_point_cloud_files(filename):
-    '''
-        Load point cloud from text file
-    '''
-    data = None
-    if filename.lower().endswith('.tmp'):
-        data = np.genfromtxt(filename, skip_header=1,  delimiter=',')
-
-    return data
-
-
-
-def calculate_full_angle(P, origin):
-    '''
-        Calculate full angle (360 degrees) between two points
-    '''
-    return math.radians(
-        math.atan2(P[1] - origin[1],
-        P[0] - origin[0]) * (180.0 / math.pi)
-    )
-
-
-def rotate_coordinate(cmodel, P, clockwise=-1):
-    '''
-        Rotate all points in list by rotation angle in origin
-    '''
-    # rotate x and y coordinates clockwise
-    x = (P[0] * math.cos(clockwise*cmodel.settings.rotation_angle)) +\
-            (P[1] * math.sin(clockwise*cmodel.settings.rotation_angle))
-    y = -(P[0] * math.sin(clockwise*cmodel.settings.rotation_angle)) +\
-            (P[1] * math.cos(clockwise*cmodel.settings.rotation_angle))
-    P = [x, y, P[2]]
-
-    return P
-
-def shift_coordinate(P, origin):
-    '''
-        Shift list of points into origin
-    '''
-    return [P[i] - origin[i] for i in range(3)]
-
-
-def normalized_grid(model):
-    '''
-        Rotate model by rotation angle
-    '''
-    z_matrix, y_matrix, x_matrix = np.meshgrid(
-        model.z,
-        model.y,
-        model.x,
-        indexing='ij'
-    )
-
-    z_list = [item for layer in z_matrix for row in layer for item in row]
-    y_list = [item for layer in y_matrix for row in layer for item in row]
-    x_list = [item for layer in x_matrix for row in layer for item in row]
-
-    coord_list = np.array(
-        [
-            [x_list[i],y_list[i],z_list[i]] for i in range(len(x_list))
-        ]
-    )
-
-    vtk_grid_x = np.array([coord[0] for coord in coord_list]).reshape((\
-                            len(model.z),len(model.y),len(model.x)))
-    vtk_grid_y = np.array([coord[1] for coord in coord_list]).reshape((\
-                            len(model.z),len(model.y),len(model.x)))
-    vtk_grid_z = np.array([coord[2] for coord in coord_list]).reshape((\
-                            len(model.z),len(model.y),len(model.x)))
-
-    return vtk_grid_x, vtk_grid_y, vtk_grid_z
-
-
-def rotate_grid(model, a=None, b=None, c=None, indexing='ij'):
-    '''
-        Rotate model by rotation angle
-    '''
-
-    if a is None:
-        a = model.x
-
-    if b is None:
-        b = model.y
-
-    if c is None:
-        c = model.z
-
-    z_matrix, y_matrix, x_matrix = np.meshgrid(
-        c,
-        b,
-        a,
-        indexing=indexing
-    )
-
-    z_list = [item for layer in z_matrix for row in layer for item in row]
-    y_list = [item for layer in y_matrix for row in layer for item in row]
-    x_list = [item for layer in x_matrix for row in layer for item in row]
-
-    coord_list = np.array(
-        [
-            [x_list[i],y_list[i],z_list[i]] for i in range(len(x_list))
-        ]
-    )
-
-    if model.settings.rotation_angle != 0:
-        coord_list = np.array(
-            [
-                rotate_coordinate(model, coord_list[i,:], clockwise=-1)\
-                                for i in range(len(coord_list))
-            ]
-        )
-
-    if model.settings.model_p1 != [0,0,0]:
-        coord_list =  np.array(
-            [
-                shift_coordinate(coord_list[i,:],\
-                    [-value for value in model.settings.model_p1])\
-                    for i in range(len(coord_list))
-            ]
-        )
-
-    # vtk_grid_x = np.array([coord[0] for coord in coord_list]).reshape((\
-                            # len(model.z),len(model.y),len(model.x)))
-    # vtk_grid_y = np.array([coord[1] for coord in coord_list]).reshape((\
-                            # len(model.z),len(model.y),len(model.x)))
-    # vtk_grid_z = np.array([coord[2] for coord in coord_list]).reshape((\
-                            # len(model.z),len(model.y),len(model.x)))
-
-    vtk_grid_x = np.array([coord[0] for coord in coord_list]).reshape((\
-                            len(c),len(b),len(a)))
-    vtk_grid_y = np.array([coord[1] for coord in coord_list]).reshape((\
-                            len(c),len(b),len(a)))
-    vtk_grid_z = np.array([coord[2] for coord in coord_list]).reshape((\
-                            len(c),len(b),len(a)))
-
-    return vtk_grid_x, vtk_grid_y, vtk_grid_z
-
-
-def convert_2d_data_to_3d_data(cmodel, points):
-    '''
-        Convert 2d csv data to 2d+/3d data
-    '''
-    ## convert 2d data to interpolatable 3d data
-    # extend data by 3rd dimension coordinate shifted by -50 (default)
-    # model_extension_width = math.dist(
-        # cmodel.settings.model_p2,
-        # cmodel.settings.model_p1
-    # )/2. + 50.
-    model_extension_width = cmodel.settings.model_dimension[1]/2+50
-    print(model_extension_width)
-
-
-    third_column = np.full(len(points[:,0]), -model_extension_width)
-    print(third_column)
-    missing_column = 0
-
-    if 'x' not in cmodel.settings.csv_columns:
-        points = np.column_stack((third_column,points))
-    elif 'y' not in cmodel.settings.csv_columns:
-        column_x = points[:,0]
-        column_z = points[:,1]
-        points = np.column_stack((column_x,third_column))
-        points = np.column_stack((points,column_z))
-        missing_column = 1
-    elif 'z' not in cmodel.settings.csv_columns:
-        points = np.column_stack((points,third_column))
-        missing_column = 2
-
-    print(missing_column)
-    # add to data a copy of the existing data with shifted 3rd coordinate to 100
-    tmp_points = np.copy(points)
-    tmp_points[:,missing_column] += model_extension_width
-    print(points)
-    print(tmp_points)
-    return np.vstack((points,tmp_points))
-
-
-def structure_in_model_boundaries(cmodel, points):
-    '''
-        Check if structure is in model boundaries
-    '''
-    # print(cmodel.settings.model_b1)
-    # print(cmodel.settings.model_b2)
-    # print(points)
-
-    # np.save("test", points)
-    # sys.exit()
-
-    return np.any(
-        (cmodel.settings.model_b1 <= points).all(axis=1) &
-        (points <= cmodel.settings.model_b2).all(axis=1)
-    )
-
-
-def load_structure_files(cmodel, structure_type='layer', vtk=True):
-    '''
-        Load text files containing layer, fault or seam point cloud data
-    '''
-    layers = Layer_Set()
-    layers.A = {}
-    layers.B = {}
-    layers.orientation = {}
-    i = 0
-
-    all_elevs = None
-
-    print(f"\nProcess point {structure_type} cloud files:\n")
-
-    filenamelist = sorted(
-        glob.glob(cmodel.settings.path_input_data + structure_type + '-*.csv')
-    )
-
-
-    for filename in filenamelist:
-        filename = os.path.basename(filename)
-
-        #### load xyz raster file
-        points = load_and_organize_point_cloud_data(
-                cmodel,
-                cmodel.settings.path_input_data + filename
-        )
-
-        pointsToVTK(
-            cmodel.settings.path_output_data + "/" + \
-            os.path.splitext(filename)[0] + "_points_orig",
-            np.ascontiguousarray(points[:,0]),
-            np.ascontiguousarray(points[:,1]),
-            np.ascontiguousarray(points[:,2])
-        )
-
-        # for 2d csv data
-        if len(cmodel.settings.csv_columns) == 2:
-            points = convert_2d_data_to_3d_data(cmodel, points)
-
-        # shift csv data to origin
-        if cmodel.settings.model_p1 != [0,0,0]:
-            points =  np.array(
-                [
-                    shift_coordinate(points[i,:], cmodel.settings.model_p1)\
+            # shift csv data to origin
+            if model.configuration.cornerPoint1 != [0,0,0]:
+                points =  np.array(
+                    [
+                        self.shiftCoordinateToOrigin(
+                            points[i,:],
+                            model.configuration.cornerPoint1
+                        )
                         for i in range(len(points))
-                ]
-            )
+                    ]
+                )
 
-        # rotate csv data so that the data are parallel to x axis
-        if cmodel.settings.rotation_angle != 0:
-            points = np.array(
-                [
-                    rotate_coordinate(cmodel, points[i,:], clockwise=1)\
+            # rotate csv data so that the data are parallel to x axis
+            if model.configuration.rotationAngle != 0:
+                points = np.array(
+                    [
+                        self.rotateCoordianteAroundOrigin(
+                            model,
+                            points[i,:],
+                            clockwise=1
+                        )
                         for i in range(len(points))
-                ]
+                    ]
+                )
+
+            # for 2d+ model extend 2d csv, from a point line to a surface
+            if not model.configuration.modelType3d:
+                points[:,1] += model.configuration.modelDimension[1]/2
+
+                tmp_points_left = np.copy(points)
+                left_shift = -model.configuration.modelDimension[1]/2 \
+                    -model.configuration.modelExtensionWith
+                tmp_points_left[:,1] += left_shift
+
+                tmp_points_right = np.copy(points)
+                right_shift = model.configuration.modelDimension[1]/2 \
+                    +model.configuration.modelExtensionWith
+                tmp_points_right[:,1] += right_shift
+                points = np.vstack((tmp_points_left, tmp_points_right))
+
+            if  "seam" in filename:
+                tmp_points_left = np.copy(points)
+                left_shift_x = -model.configuration.modelDimension[1]/(
+                    model.configuration.cellNumberY*2
+                )
+                tmp_points_left[:,0] += left_shift_x
+                left_shift_y = -model.configuration.modelDimension[1]/(
+                    model.configuration.cellNumberY*2
+                )
+                tmp_points_left[:,1] += left_shift_y
+
+                tmp_points_right = np.copy(points)
+                right_shift_x = \
+                    model.configuration.modelDimension[0]/model.configuration.cellNumberX
+                tmp_points_right[:,0] += right_shift_x
+                right_shift_y = \
+                    model.configuration.modelDimension[1]/model.configuration.cellNumberY
+                tmp_points_right[:,1] += right_shift_y
+                points = np.vstack((tmp_points_left, tmp_points_right))
+
+
+            # if structure_in_model_boundaries(model, points):
+            np.savetxt(
+                model.configuration.inputPath + os.path.splitext(
+                    filename
+                )[0] + ".tmp",
+                points,
+                fmt='%.2f',
+                header='x,y,z',
+                comments="",
+                delimiter=","
             )
 
-        # for 2d+ model extend 2d csv, from a point line to a surface
-        # the existing points are duplicated and
-        # the first copy is shifted on y axis to -50*abs(model width/2) and
-        # the other copy is shifted on y asis to 50*abs(model width/2)
-        if not cmodel.settings.s3d:
-            model_extension_width = cmodel.settings.model_dimension[1]/2+50
-            # print(model_extension_width)
+            filenameMappingList[os.path.splitext(filename)[0] + '.tmp'] = filename
 
-            points[:,1] -= model_extension_width
-            tmp_points = np.copy(points)
-            tmp_points[:,1] += model_extension_width*2
-            points = np.vstack((points,tmp_points))
-
-        # if structure_in_model_boundaries(cmodel, points):
-        np.savetxt(
-            cmodel.settings.path_input_data + os.path.splitext(
-                filename
-            )[0] + ".tmp",
-            points,
-            fmt='%.2f',
-            header='x,y,z',
-            comments="",
-            delimiter=","
-        )
-        # else:
-            # print(f"> {filename} is ignored because coordinates out of model boundaries")
+        if filenameMappingList:
+            logging.info(f"Best plane for interpolation of {structureType}" + \
+                " values to the grid:")
 
 
-    filenamelist = sorted(
-        glob.glob(cmodel.settings.path_input_data + structure_type + '-*.tmp')
-    )
-
-    if filenamelist:
-        print(f"\nBest plane for interpolation of {structure_type}" + \
-            " values to the grid:\n")
-
-
-    for filename in filenamelist:
-
-        filename = os.path.basename(filename)
-        #### load xyz raster file
-        points = load_point_cloud_files(
-            cmodel.settings.path_input_data + filename
-        )
-
-        # points_tmp = points
-
-        # points_tmp = np.array(
-            # [
-                # i
-                    # if i[2]>cmodel.settings.model_b1[2] and i[2]<cmodel.settings.model_b2[2]
-                    # else [np.nan, np.nan, np.nan]
-                # for i in points_tmp
-            # ]
-        # )
-
-        # print(cmodel.settings.model_b1[2])
-        # print(cmodel.settings.model_b2[2])
-        # np.set_printoptions(threshold=sys.maxsize)
-        # np.set_printoptions(suppress=True)
-        # print(points_tmp)
-
-        # points_tmp = points_tmp[~np.isnan(points_tmp).any(axis=1),:]
-        # print(points_tmp.shape)
-        # points = points_tmp
-
-        # if cmodel.settings.rotation_angle != 0:
-            # points_tmp = np.array(
-                # [rotate_coordinate(cmodel, points_tmp[i,:]) for i in range(len(points_tmp))]
-            # )
-
-        # if cmodel.settings.model_p1 != [0,0,0]:
-            # points_tmp =  np.array(
-                # [
-                    # shift_coordinate(
-                        # points_tmp[i,:], [-value for value in cmodel.settings.model_p1]
-                    # ) for i in range(len(points_tmp))
-                # ]
-            # )
-
-        # pointsToVTK(
-            # cmodel.settings.path_output_data + "/" + \
-            # os.path.splitext(filename)[0] + "_points_used",
-            # np.ascontiguousarray(points_tmp[:,0]),
-            # np.ascontiguousarray(points_tmp[:,1]),
-            # np.ascontiguousarray(points_tmp[:,2])
-        # )
-
-
-        ## set NAN to 0
-        points[np.isnan(points)] = 0
-
-        ex = np.array(cmodel.x)
-        if not cmodel.settings.s3d:
-            ey = np.asarray([-model_extension_width*3/4, model_extension_width*3/4])
-        else:
-            ey = np.array(cmodel.y)
-        ez = np.array(cmodel.z)
-
-
-        layers.orientation[i]= "xy"
-        elevationXY = interpolate(points, ex, ey, method=2)
-
-        elevationXZ = None
-        if cmodel.ny > 1:
-            elevationXZ = interpolate(
-                np.array([points[:,0], points[:,2], points[:,1]]).T,
-                ex, ez, method=2
+        for filename in filenameMappingList:
+            glob.glob(filename)
+            filename = os.path.basename(filename)
+            #### load xyz raster file
+            points = self.loadPointCloudFiles(
+                model.configuration.inputPath + filename
             )
 
-        elevationYZ = interpolate(
-            np.array([points[:,1], points[:,2], points[:,0]]).T,
-            ey, ez, method=2
-        )
+            ## set NAN to 0
+            points[np.isnan(points)] = 0
 
-        all_elevs = [elevationXY, elevationXZ, elevationYZ]
+            ex = np.array(model.x)
+            ey = np.array(model.y)
 
-        if elevationXY is None:
-            layers.orientation[i]= "yz"
+            if not model.configuration.modelType3d:
+                eyLength = ey.size
+                if(eyLength == 1):
+                    eyLength = 2
 
-            if elevationYZ is None:
-                layers.orientation[i]= "xz"
+                ey = np.linspace(
+                    -model.configuration.modelExtensionWith,
+                    model.configuration.modelDimension[1] \
+                        +model.configuration.modelExtensionWith,
+                    eyLength
+                )
 
-                if cmodel.ny > 1 and elevationXZ is None:
-                    print(' coordinates of ' + structure_type +\
-                            ' could not be interpolated and will be ignored!\n')
-                    continue
+            ez = np.array(model.z)
 
-        elevationXY_quality = 0
-        elevationXZ_quality = 0
-        elevationYZ_quality = 0
+            interpolation_quality = 0
+            layers.orientation[i]= "xy"
+            elevationXY = self.interpolatePlane(points, ex, ey)
+            elevationXY = self.fixInterpolationVariationInZDirection(model, elevationXY)
 
-        if elevationXY is not None:
-            elevationXY_quality = np.sum(~np.isnan(elevationXY))/\
-                (cmodel.nx*cmodel.ny)
-        if cmodel.ny > 1 and elevationXZ is not None:
-            elevationXZ_quality = np.sum(~np.isnan(elevationXZ))/\
-                (cmodel.nx*cmodel.nz)
-        if elevationYZ is not None:
-            elevationYZ_quality = np.sum(~np.isnan(elevationYZ))/\
-                (cmodel.ny*cmodel.nz)
+            elevationXZ = None
+            if model.configuration.modelType3d:
+                newPoints = np.array([points[:,0], points[:,2], points[:,1]]).T
+                elevationXZ = self.interpolatePlane(
+                    newPoints,
+                    ex, ez
+                )
 
-        interpolation_quality = elevationXY_quality
+            newPoints = np.array([points[:,1], points[:,2], points[:,0]]).T
+            elevationYZ = self.interpolatePlane(newPoints, ey, ez)
+            elevationYZ = self.fixInterpolationVariationInXDirection(model, elevationYZ)
 
-        if cmodel.ny > 1 and interpolation_quality < elevationXZ_quality:
-            layers.orientation[i]= "xz"
-            interpolation_quality = elevationXZ_quality
-        if interpolation_quality < elevationYZ_quality:
-            layers.orientation[i]= "yz"
-            interpolation_quality = elevationXZ_quality
+            all_elevs = [elevationXY, elevationXZ, elevationYZ]
 
-        width = 0
-        if filename.lower().split(".")[0] in cmodel.settings.partition_width:
-            width = cmodel.settings.partition_width[filename.split(".")[0]]
 
-        if filename.split(".")[0] in cmodel.settings.layer_state:
-            layer_option = cmodel.settings.layer_state[filename.split(".")[0]]
-        else:
-            layer_option = 0
-        # np.set_printoptions(threshold=sys.maxsize)
-        if layers.orientation[i] == "xy":
-            # print("---------XY------------")
-            # print(elevationXY)
-            a, b = np.meshgrid(ex, ey)
-            c = elevationXY
-            layers.A[i] = {
-                "name" : filename.split(".")[0],
-                "width": width,
-                "elevation": elevationXY,
-                "option" : layer_option
-            }
-            layers.B[i] = {
-                "name" : filename.split(".")[0],
-                "width": width,
-                "elevation": elevationYZ,
-                "option" : layer_option
-            }
+            if elevationXY is None:
+                layers.orientation[i]= "yz"
 
-        if layers.orientation[i] == "xz":
-            # print("---------XZ------------")
-            # print(elevationXZ)
-            a, c = np.meshgrid(ex, ez)
-            b = elevationXZ
-            layers.A[i] = {
-                "name" : filename.split(".")[0],
-                "width": width,
-                "elevation": elevationXZ,
-                "option" : layer_option
-            }
-            layers.B[i] = {
-                "name" : filename.split(".")[0],
-                "width": width,
-                "elevation": elevationYZ,
-                "option" : layer_option
-            }
+                if elevationYZ is None:
+                    layers.orientation[i]= "xz"
 
-        if layers.orientation[i] == "yz":
-            # print("---------YZ------------")
-            # print(elevationYZ)
-            b, c = np.meshgrid(ey, ez)
-            a = elevationYZ
-            layers.A[i] = {
-                "name" : filename.split(".")[0],
-                "width": width,
-                "elevation": elevationYZ,
-                "option" : layer_option
-            }
-            layers.B[i] = {
-                "name" : filename.split(".")[0],
-                "width": width,
-                "elevation": elevationXY,
-                "option" : layer_option
-            }
+                    if model.ny > 1 and elevationXZ is None:
+                        logging.info(' coordinates of ' + structureType +\
+                                ' could not be interpolated and will be ignored!\n')
+                        continue
 
-        if vtk:
-            print(f"\tinterpolation plane {layers.orientation[i]}\t->\t",end="")
+            elevationXY_quality = 0
+            elevationXZ_quality = 0
+            elevationYZ_quality = 0
 
-            vtk_filename = cmodel.settings.path_output_data + \
-                os.path.splitext(filename)[0]
+            if elevationXY is not None:
+                elevationXY_quality = np.sum(~np.isnan(elevationXY))/\
+                    (model.nx*model.ny)
 
-            status = points_to_pyvista_surface(
-                cmodel,
-                vtk_filename,
-                a.flatten(),
-                b.flatten(),
-                c.flatten()
-            )
+            if model.ny > 1 and elevationXZ is not None and structureType != "layer":
+                elevationXZ_quality = np.sum(~np.isnan(elevationXZ))/\
+                    (model.nx*model.nz)
 
-            if status:
-                print(f"{vtk_filename}.vtk")
+            if elevationYZ is not None and structureType != "layer":
+                elevationYZ_quality = np.sum(~np.isnan(elevationYZ))/\
+                    (model.ny*model.nz)
+
+            if interpolation_quality < elevationXY_quality:
+                layers.orientation[i] = "xy"
+                interpolation_quality = elevationXY_quality
+
+            if interpolation_quality < elevationXZ_quality and structureType != "layer":
+                layers.orientation[i] = "xz"
+                interpolation_quality = elevationXZ_quality
+
+            if interpolation_quality < elevationYZ_quality and structureType != "layer":
+                layers.orientation[i] = "yz"
+                interpolation_quality = elevationYZ_quality
+
+            width = 0
+            if filename.lower().split(".")[0] in model.configuration.structureWidth:
+                width = model.configuration.structureWidth[filename.split(".")[0]]
+
+            if filename.split(".")[0] in model.configuration.structureRank:
+                layer_option = model.configuration.structureRank[filename.split(".")[0]]
             else:
-                print("\n\tWARNING: Interpolation of surface not successful." +\
-                     f"\n\tBuilding of {vtk_filename}.vtu not possible!")
-
-        os.remove(cmodel.settings.path_input_data + \
-            os.path.splitext(filename)[0] + '.tmp')
-
-        i += 1
-
-    return layers, all_elevs
+                layer_option = 0
 
 
-def generate_layer_partitions(cmodel, layers, old_grid_data):
-    '''
-        Generate model cell clusters regarding layers
-        and add a partition number to this cells
-    '''
-    grid_data = np.ones((cmodel.nz, cmodel.ny, cmodel.nx), np.int32)
+            positionInFileList = model.configuration.structureFileList.index(
+                filenameMappingList[filename]
+            )
+            layers.fileType[i] =  model.configuration.structureTypeList[
+                positionInFileList
+            ]
 
-    if old_grid_data is None:
-        old_grid_data = np.ones_like(grid_data)
+            if layers.orientation[i] == "xy":
+                layers.A[i] = {
+                    "name" : filename.split(".")[0],
+                    "width": width/2,
+                    "elevation": elevationXY,
+                    "option" : layer_option,
+                    "fileType" : model.configuration.structureTypeList[
+                        positionInFileList
+                    ],
+                }
+                layers.id = 1
 
-    partition_data = np.ones_like(grid_data)
+            if layers.orientation[i] == "xz":
+                layers.A[i] = {
+                    "name" : filename.split(".")[0],
+                    "width": width/2,
+                    "elevation": elevationXZ,
+                    "option" : layer_option,
+                    "fileType" : model.configuration.structureTypeList[positionInFileList],
+                }
+                layers.id = 2
 
-    tmodel = None
-    flag = False
+            if layers.orientation[i] == "yz":
+                layers.A[i] = {
+                    "name" : filename.split(".")[0],
+                    "width": width/2,
+                    "elevation": elevationYZ,
+                    "option" : layer_option,
+                    "fileType" : model.configuration.structureTypeList[positionInFileList],
+                }
+                layers.id = 3
 
-    print("\n====================================")
-    print("\tGenerate layer partitions")
-    print("====================================\n")
+            logging.info(
+                f"\tinterpolation plane {layers.orientation[i]}\t-> {layers.id} \t"
+            )
 
-    pt = Partition_Table()
-    pt.pname = []
-    pt.mode1 = []
-    pt.pid = []
-    ## default = 1
+            if vtk:
+                xmesh, ymesh = np.meshgrid(ex, ey)
+                zmesh = elevationXY
 
-    print("inaktiv  \t-> 0")
-    print("default  \t-> 1")
-    for l in range(0, len(layers.A)):
-        cmodel.settings.partition_number += 1
-        pt.pname.append(layers.A[l]['name'])
-        pt.mode1.append(layers.A[l]['option'])
-        pt.pid.append(cmodel.settings.partition_number)
-        print(f"{pt.pname[l]}\t-> {pt.pid[l]}")
+                vtk_filename = model.configuration.outputPath + \
+                    os.path.splitext(filename)[0]
 
-        if layers.orientation[l] == "xy":
-            ijk = 2
-        elif layers.orientation[l] == "xz":
-            ijk = 1
-        else:
-            ijk = 0
+                status = self.pointsToPyvistaSurface(
+                    model,
+                    vtk_filename,
+                    xmesh.flatten(),
+                    ymesh.flatten(),
+                    zmesh.flatten()
+                )
 
-        tmodel = np.meshgrid(cmodel.x, cmodel.y, cmodel.z, indexing='ij')[ijk]
-
-        for i in range(0, cmodel.nx):
-            for j in range(0, cmodel.ny):
-                for k in range(0, cmodel.nz):
-                    if layers.orientation[l] == "xy":
-                        lx = i
-                        ly = j
-                    elif layers.orientation[l] == "xz":
-                        lx = i
-                        ly = k
-                    elif layers.orientation[l] == "yz":
-                        lx = j
-                        ly = k
-
-                    new_pid = set_new_partitionid(
-                        layers, l, lx, ly, tmodel[i, j, k], pt
+                if status:
+                    logging.info(f"\t\t{vtk_filename}.vtk")
+                else:
+                    logging.warning(
+                        "\tWARNING: Interpolation of surface not successful." +\
+                        f"\tBuilding of {vtk_filename}.vtu not possible!"
                     )
 
-                    if old_grid_data[k,j,i] != 0:
-                        if new_pid:
-                            grid_data[k, j, i] = pt.pid[l]
-                    else:
-                        grid_data[k, j, i] = 0
+            os.remove(model.configuration.inputPath + \
+                os.path.splitext(filename)[0] + '.tmp')
 
-                    if new_pid:
-                        partition_data[k, j, i] = pt.pid[l]
+            i += 1
 
-        flag = True
+        return layers, all_elevs
 
 
-    print("Total number of partitions: ", end='')
-    print(str(cmodel.settings.partition_number+1), end='')
-    if flag:
-        print(' (0-' + str(cmodel.settings.partition_number) + ')', end='')
-    print('')
+    def fixInterpolationVariationInZDirection(self, model, elevationMatrix):
+        if not model.configuration.modelType3d and elevationMatrix is not None:
 
-    return grid_data, partition_data
+            elevationMatrixRowMean = np.nanmean(elevationMatrix, axis=0)
+            elevationMatrix = np.tile(
+                elevationMatrixRowMean, (elevationMatrix.shape[0], 1)
+            )
+        return elevationMatrix
 
 
-def set_new_partitionid(layers, l, i, j, current_cell_center,  pt):
-    '''
-        Set new parition ids 
-    '''
-    new_pid = False
+    def fixInterpolationVariationInXDirection(self, model, elevationMatrix):
+        if not model.configuration.modelType3d and elevationMatrix is not None:
+            elevationMatrixRowMean = np.nanmean(elevationMatrix, axis=1)
+            elevationMatrix = np.tile(
+                elevationMatrixRowMean, (elevationMatrix.shape[1], 1)
+            )
+        return elevationMatrix
 
-    if layers.A[l]['elevation'][j, i] > current_cell_center:
-        new_pid = l == 0
 
-        for pi in reversed(range(l)):
-            other_layer_elevation = layers.A[pi]['elevation'][j, i]
-            current_layer_elevation = layers.A[l]['elevation'][j, i]
-            if other_layer_elevation > current_layer_elevation:
-                new_pid = True
-            elif other_layer_elevation < current_layer_elevation and \
-                pt.mode1[pi] == 0:
-                new_pid = True
-            elif current_cell_center < other_layer_elevation < current_layer_elevation and \
-                pt.mode1[pi] == 1:
-                new_pid = True
-            elif other_layer_elevation < current_layer_elevation and\
-                current_cell_center < current_layer_elevation  and pt.mode1[l] == 1:
-                new_pid = True
-            elif other_layer_elevation < current_layer_elevation and\
-                other_layer_elevation < current_cell_center and pt.mode1[pi] == 1:
-                new_pid = False
+    def GenerateLayerPartitions(
+        self,
+        model,
+        layers,
+        old_grid_data
+    ):
+        '''
+            Generate model cell clusters regarding layers
+            and add a partition number to this cells
+        '''
+        grid_data = np.ones((model.nz, model.ny, model.nx), np.int32)
+
+        if old_grid_data is None:
+            old_grid_data = np.ones_like(grid_data)
+
+        partition_data = np.ones_like(grid_data)
+        special_grid_data = np.zeros_like(grid_data)
+
+        if len(layers.A) == 0:
+            grid_data = old_grid_data
+
+        SPECIALpartitionCounter = 1
+        tmodel = None
+
+        logging.info("====================================")
+        logging.info("\tGenerate structure partitions")
+        logging.info("====================================")
+
+        pt = model.configuration.partitionList
+        pt.pname = []
+        pt.mode1 = []
+        pt.pid = []
+
+        rankLayers = []
+
+        model.configuration.part['all'] = 0
+        model.configuration.part['default'] = 1
+
+        logging.info("inaktiv  \t-> 0")
+        model.configuration.partitionCounter += 1
+        logging.info("default  \t-> 1")
+
+        for l in range(0, len(layers.A)):
+            model.configuration.partitionCounter += 1
+            pt.pname.append(layers.A[l]['name'])
+            pt.mode1.append(layers.A[l]['option'])
+
+            if layers.A[l]['option'] > 0:
+                rankLayers.append(
+                    [model.configuration.partitionCounter, layers.A[l]['option']]
+                )
+
+            pt.pid.append(model.configuration.partitionCounter)
+            model.configuration.part[layers.A[l]['name']] = \
+                model.configuration.partitionCounter
+            logging.info(f"{pt.pname[l]}\t-> {pt.pid[l]}")
+
+            if layers.orientation[l] == "xy":
+                ijk = 2
+                indexSteps = IndexStepControl(2, 0, 0, 1)
+            elif layers.orientation[l] == "xz":
+                ijk = 1
+                indexSteps = IndexStepControl(1, 0, 1, 0)
+            else:
+                ijk = 0
+                indexSteps = IndexStepControl(0, 1, 0, 0)
+
+            tmodel = np.meshgrid(model.x, model.y, model.z, indexing='ij')[ijk]
+
+
+            if layers.A[l]['fileType'] == "layer":
+                for i in range(0, model.nx):
+                    for j in range(0, model.ny):
+                        for k in range(0, model.nz):
+                            if layers.orientation[l] == "xy":
+                                lx = i
+                                ly = j
+                            elif layers.orientation[l] == "xz":
+                                lx = i
+                                ly = k
+                            else:
+                                lx = j
+                                ly = k
+
+                            new_pid = self.setNewParitionId(
+                                layers, l, lx, ly, tmodel[i, j, k], pt
+                            )
+
+                            if old_grid_data[k,j,i] != 0:
+                                if new_pid:
+                                    grid_data[k, j, i] = pt.pid[l]
+                            else:
+                                grid_data[k, j, i] = 0
+
+
+                            if partition_data[k,j,i] != 0:
+                                if new_pid:
+                                    partition_data[k, j, i] = pt.pid[l]
+                            else:
+                                partition_data[k, j, i] = 0
+
+
+            elif layers.A[l]['fileType'] == "fault":
+                grid_data, special_grid_data = self.identifyParitionElements(
+                    model,
+                    grid_data,
+                    special_grid_data,
+                    indexSteps,
+                    layers.orientation[l],
+                    layers.A[l],
+                    layers,
+                    SPECIALpartitionCounter,
+                    rankLayers
+                )
+
+                SPECIALpartitionCounter += 1
+
+        logging.info("Total number of partitions: " + str(model.configuration.partitionCounter+1))
+
+        return grid_data, partition_data, special_grid_data
+
+
+    def setNewParitionId(
+        self,
+        layers,
+        l,
+        lx,
+        ly,
+        current_cell_center_elevation,
+        pt
+    ):
+        '''
+            Set new parition ids
+        '''
+        new_pid = False
+
+        current_layer_elevation = layers.A[l]['elevation'][ly, lx]
+
+        # ist die das mittelpunkt des aktullen elementes unterhalb der aktuellen
+        # horizontoberfläche (layer surface) dann gehört das element zur parition
+        # des neuen layers
+        if current_cell_center_elevation < current_layer_elevation:
+            current_layer_priority = layers.A[l]['option']
+            new_pid = l == 0
+
+            # new_pid = True
+
+            # falls aber bereits eine andere partition existiert die eine höhere
+            # priorität (rank) hat dann eben nicht, also wir hier noch mal gegen alle
+            # anderen horizontoberflächen die priorität geprüft
+            for pi in (range(l)):
+                try:
+                    old_layer_elevation = layers.A[pi]['elevation'][ly, lx]
+                    old_layer_priority = pt.mode1[pi]
+                except:
+                    pass
+
+                if old_layer_priority == current_layer_priority:
+                    new_pid = True
+                # an already processed layer surface with higher priority cuts the
+                # current layer surface
+                elif old_layer_priority > current_layer_priority and \
+                    old_layer_elevation > current_cell_center_elevation:
+                    new_pid = True
+
+                # if old_layer_elevation >= current_layer_elevation and \
+                #    old_layer_priority >= current_layer_priority:
+                #     new_pid = True
+
+                # if current_layer_elevation < old_layer_elevation and \
+                #     current_layer_priority == old_layer_priority:
+                #     new_pid = True
+
+                # if current_cell_center_elevation < old_layer_elevation < \
+                #     current_layer_elevation and current_layer_priority < \
+                #     old_layer_priority:
+                #     new_pid = True
+
+                # if current_layer_elevation < old_layer_elevation and \
+                #     current_layer_priority < old_layer_priority:
+                #     new_pid = True
+
+                # if old_layer_elevation < current_cell_center_elevation < \
+                #     current_layer_elevation and current_layer_priority < \
+                #     old_layer_priority:
+                #     new_pid = False
+
+        return new_pid
+
+
+    def generateModelCellIds(self, model):
+        '''
+            Generate model cell ids for model post processing
+        '''
+        grid_data = np.zeros((model.nz, model.ny, model.nx), np.int32)
+        grid_i_ids = np.zeros_like(grid_data)
+        grid_j_ids = np.zeros_like(grid_data)
+        grid_k_ids = np.zeros_like(grid_data)
+
+        for k in range(0, model.nz):
+            for j in range(0, model.ny):
+                for i in range(0, model.nx):
+                    grid_data[k, j, i] = i + j*model.nx + k*model.nx*model.ny
+                    grid_i_ids[k, j, i] = i
+                    grid_j_ids[k, j, i] = j
+                    grid_k_ids[k, j, i] = k
+
+        return grid_data, grid_i_ids, grid_j_ids, grid_k_ids
+
+
+    def generateActivePartition(
+        self,
+        model: CenterPointModel,
+        old_grid_data=None,
+        name="active",
+        filenameList=None,
+        filenameType=None
+        ):
+        '''
+            Generate model cell clusters regarding the shapefile mask
+            and add a patiation number to this cells
+        '''
+
+
+        if filenameList:
+            if not old_grid_data:
+                old_grid_data = np.zeros((model.nz, model.ny, model.nx), np.int32)
+
+            special_grid_data = np.zeros_like(old_grid_data)
+
+            filenameList = [(index, item) for index, item in enumerate(filenameList)]
+            filenameList = dict(filenameList)
+        else:
+            if not old_grid_data:
+                old_grid_data = np.ones((model.nz, model.ny, model.nx), np.int32)
+
+            special_grid_data = np.ones_like(old_grid_data)
+
+            return old_grid_data, special_grid_data
+
+        maskFilename = False
+        for key, filename in filenameList.items():
+
+            if key >= 0 and filenameType[key] == 'mask':
+                maskFilename = model.configuration.inputPath + filename
+                maskFileKey = key
                 break
 
-    return new_pid
+        if maskFilename:
+
+            if maskFilename.split('.')[-1] == 'asc':
+
+                logging.info("====================================")
+                logging.info("\tGenerate " + name + " partitions")
+                logging.info("====================================")
+                logging.info("-> " + maskFilename)
+
+                filename = os.path.basename(maskFilename)
+                #### load xyz raster file
+                points = self.loadPointCloudFiles(
+                    model.configuration.inputPath + filename
+                )
 
 
-def generate_model_cell_ids(cmodel):
-    '''
-        Generate model cell ids for model post processing
-    '''
-    grid_data = np.zeros((cmodel.nz, cmodel.ny, cmodel.nx), np.int32)
-    grid_i_ids = np.zeros_like(grid_data)
-    grid_j_ids = np.zeros_like(grid_data)
-    grid_k_ids = np.zeros_like(grid_data)
+                ## set NAN to 0
+                points[np.isnan(points)] = -1
 
-    for k in range(0, cmodel.nz):
-        for j in range(0, cmodel.ny):
-            for i in range(0, cmodel.nx):
-                grid_data[k, j, i] = i + j*cmodel.nx + k*cmodel.nx*cmodel.ny
-                grid_i_ids[k, j, i] = i
-                grid_j_ids[k, j, i] = j
-                grid_k_ids[k, j, i] = k
-
-    return grid_data, grid_i_ids, grid_j_ids, grid_k_ids
-
-
-def generate_active_partitions(cmodel,old_grid_data=None,name="active"):
-    '''
-        Generate model cell clusters regarding the shapefile mask 
-        and add a patiation number to this cells
-    '''
-    filenamelist = sorted(
-        glob.glob(cmodel.settings.path_shape_data + '*.shp')
-    )
-
-    tiff_file = cmodel.settings.path_output_data + cmodel.settings.mask_file
-
-    if len(filenamelist):
-        if not old_grid_data:
-            old_grid_data = np.zeros((cmodel.nz, cmodel.ny, cmodel.nx), np.int32)
-
-        special_grid_data = np.zeros_like(old_grid_data)
-
-        print("\n====================================")
-        print("\tGenerate " + name + " partitions")
-        print("====================================\n")
-        print("-> " + filenamelist[-1])
-
-        shape = ogr.Open(filenamelist[-1])
-
-        shape_layer = shape.GetLayer()
-        x_min, x_max, y_min, y_max = shape_layer.GetExtent()
-
-        x_pixel_size = int(np.min(cmodel.settings.dx)/2)
-        y_pixel_size = int(np.min(cmodel.settings.dy)/2)
-
-        x_pixel_res = int((x_max-x_min)/x_pixel_size)
-        y_pixel_res = int((y_max-y_min)/y_pixel_size)
-
-        target_ds = gdal.GetDriverByName('GTiff').Create(
-            tiff_file, x_pixel_res, y_pixel_res, 1, gdal.GDT_Byte
-        )
-
-        target_ds.SetGeoTransform(
-            (x_min, x_pixel_size, 0, y_min, 0, y_pixel_size)
-        )
-
-        band = target_ds.GetRasterBand(1)
-        NoData_value = 0
-        band.SetNoDataValue(NoData_value)
-        band.FlushCache()
-        gdal.RasterizeLayer(target_ds, [1], shape_layer)
-        target_ds = None
-        mask = gdal.Open(tiff_file).ReadAsArray()
-
-        x_mask_vector = np.array(
-            [
-                x_min+((x_max-x_min)/x_pixel_res)*i
-                for i in range(0, x_pixel_res)
-            ]
-        )
-        y_mask_vector = np.array(
-            [
-                y_min+((y_max-y_min)/y_pixel_res)*i
-                for i in range(0, y_pixel_res)
-            ]
-        )
-
-        x_mask, y_mask = np.meshgrid(x_mask_vector, y_mask_vector)
-        mask_data = np.array(
-            (x_mask.flatten(), y_mask.flatten(), mask.flatten())
-        )
-
-        x_vector_model = cmodel.x[:] + x_min
-        y_vector_model = cmodel.y[:] + y_min
-        model_mask = interpolate(
-            mask_data.T, x_vector_model, y_vector_model[::-1]
-        )
-
-        old_grid_data[:,model_mask[::-1]>110] = 1
-        special_grid_data[:,model_mask[::-1]>110] = 1
-
-    else:
-        if not old_grid_data:
-            old_grid_data = np.ones((cmodel.nz, cmodel.ny, cmodel.nx), np.int32)
-
-        special_grid_data = np.ones_like(old_grid_data)
-
-    return old_grid_data, special_grid_data
-
-
-def identify_partition_elements(
-    cmodel,
-    grid_data,
-    special_grid_data,
-    a,
-    layer_orientation,
-    layer,
-    partition_number
-):
-    '''
-        identify elements that are part of partition
-    '''
-    model = np.meshgrid(cmodel.x, cmodel.y, cmodel.z, indexing='ij')[a.vd]
-
-    for i in range(0, cmodel.nx - a.vi):
-        for j in range(0, cmodel.ny - a.vj):
-            for k in range(0, cmodel.nz - a.vk):
-
-                layer_elevation = 0
-
-                if layer_orientation == "xy":
-                    try:
-                        layer_elevation = layer["elevation"][j, i]
-                    except:
-                        layer_elevation = layer["elevation"][k, j]
-                elif layer_orientation == "xz":
-                    try:
-                        layer_elevation = layer["elevation"][k, i]
-                    except:
-                        layer_elevation = layer["elevation"][k, j]
+                if len(model.x) < 2 and len(model.y) < 2:
+                    x = model.x[0]
+                    ex = np.array([x-abs(x), x, x+abs(x)])
+                    y = model.y[0]
+                    ey = np.array([y-abs(y), y, y+abs(y)])
                 else:
-                    try:
-                        layer_elevation = layer["elevation"][k, j]
-                    except:
-                        layer_elevation = layer["elevation"][j, i]
+                    ex = np.array(model.x)
+                    ey = np.array(model.y)
 
-                nk = k + a.vk
-                nj = j + a.vj
-                ni = i + a.vi
+                elevationXY = self.interpolatePlane(points, ex, ey)
 
-                if model[i, j, k] <= layer_elevation < model[ni,nj,nk] and \
-                    layer["elevation"] is not None:
+                if len(model.x) < 2 and len(model.y) < 2:
+                    if elevationXY != None and elevationXY[1,1] == 0:
+                        elevationXY = np.array([elevationXY[1,1]])
+                    else:
+                        elevationXY = None
 
-                    grid_data[k,j,i] = cmodel.settings.partition_number+1
-                    grid_data[nk,nj,ni] = cmodel.settings.partition_number+1
 
-                    if special_grid_data[k, j, i] == 0:
-                        special_grid_data[k, j, i] = partition_number
-                    if special_grid_data[nk,nj,ni] == 0:
-                        special_grid_data[nk,nj,ni] = partition_number
+                if elevationXY.any() != None:
+                    elevationXY_ = np.flipud(elevationXY)
+                    elevationXY_[np.isnan(elevationXY_)] = -1
 
-                    t = 1
-                    ptk = k - t*a.vk
-                    ptj = j - t*a.vj
-                    pti = i - t*a.vi
+                    old_grid_data[:,elevationXY_[::-1]==0] = 1
+                    old_grid_data[:,elevationXY_[::-1]==-1] = 0
+                    special_grid_data[:,elevationXY_[::-1]==0] = 1
+                    special_grid_data[:,elevationXY_[::-1]==-1] = 0
+                else:
+                    old_grid_data[:,:] = 1
+                    special_grid_data[:,:] = 1
 
-                    valid_offset = 0 <= (i - t)*a.vi and \
-                        0 <= (j - t)*a.vj and 0 <= (k - t)*a.vk
+                pointCloud = pv.PolyData(points)
 
-                    while valid_offset and\
-                        layer_elevation - layer["width"] < model[pti,ptj,ptk]:
+                vtk_filename = model.configuration.outputPath + \
+                    filename.split('.')[0] + '.vtk'
+                pcl = pointCloud.delaunay_3d(alpha=3.0)
+                surface = pcl.extract_geometry()
+                surface.save(vtk_filename)
 
-                        grid_data[ptk,ptj,pti] = \
-                            cmodel.settings.partition_number + 1
+            else:
 
-                        if special_grid_data[ptk,ptj,pti] == 0:
-                            special_grid_data[ptk,ptj,pti] = partition_number
+                tiff_file = \
+                    model.configuration.outputPath + model.configuration.maskFileName
 
-                        t += 1
+                if not old_grid_data:
+                    old_grid_data = np.zeros((model.nz, model.ny, model.nx), np.int32)
+
+                logging.info("====================================")
+                logging.info("\tGenerate " + name + " partitions")
+                logging.info("====================================")
+                logging.info("-> " + maskFilename)
+
+                shape = ogr.Open(maskFilename)
+
+                shape_layer = shape.GetLayer()
+                x_min, x_max, y_min, y_max = shape_layer.GetExtent()
+
+                x_pixel_size = int(np.min(model.configuration.discretisationX)/2)
+                y_pixel_size = int(np.min(model.configuration.discretisationY)/2)
+
+                x_pixel_res = int((x_max-x_min)/x_pixel_size)
+                y_pixel_res = int((y_max-y_min)/y_pixel_size)
+
+                target_ds = gdal.GetDriverByName('GTiff').Create(
+                    tiff_file, x_pixel_res, y_pixel_res, 1, gdal.GDT_Byte
+                )
+
+                target_ds.SetGeoTransform(
+                    (x_min, x_pixel_size, 0, y_min, 0, y_pixel_size)
+                )
+
+                band = target_ds.GetRasterBand(1)
+                NoData_value = 0
+                band.SetNoDataValue(NoData_value)
+                band.FlushCache()
+                gdal.RasterizeLayer(target_ds, [1], shape_layer)
+                target_ds = None
+                mask = gdal.Open(tiff_file).ReadAsArray()
+
+                x_mask_vector = np.array(
+                    [
+                        x_min+((x_max-x_min)/x_pixel_res)*i
+                        for i in range(0, x_pixel_res)
+                    ]
+                )
+                y_mask_vector = np.array(
+                    [
+                        y_min+((y_max-y_min)/y_pixel_res)*i
+                        for i in range(0, y_pixel_res)
+                    ]
+                )
+
+                x_mask, y_mask = np.meshgrid(x_mask_vector, y_mask_vector)
+                mask_data = np.array(
+                    (x_mask.flatten(), y_mask.flatten(), mask.flatten())
+                )
+
+                x_vector_model = model.x[:] + x_min
+                y_vector_model = model.y[:] + y_min
+                model_mask = Helper.interpolatePlane(
+                    mask_data.T, x_vector_model, y_vector_model[::-1]
+                )
+
+                old_grid_data[:,model_mask[::-1]>110] = 1
+                special_grid_data[:,model_mask[::-1]>110] = 1
+
+        else:
+            if not old_grid_data.all():
+                old_grid_data = np.ones((model.nz, model.ny, model.nx), np.int32)
+
+            special_grid_data = np.ones_like(old_grid_data)
+
+        return old_grid_data, special_grid_data
+
+
+    def identifyParitionElements(
+        self,
+        model,
+        grid_data,
+        special_grid_data,
+        a,
+        layer_orientation,
+        layer,
+        layers,
+        partitionCounter,
+        rankLayers
+    ):
+        '''
+            identify elements that are part of partition
+        '''
+        tmodel = np.meshgrid(model.x, model.y, model.z, indexing='ij')[a.vd]
+
+        for i in range(0, model.nx - a.vi):
+            for j in range(0, model.ny - a.vj):
+                for k in range(0, model.nz - a.vk):
+
+                    layer_elevation = 0
+
+                    if layer_orientation == "xy":
+                        try:
+                            layer_elevation = layer["elevation"][j, i]
+                        except:
+                            layer_elevation = layer["elevation"][k, j]
+                    elif layer_orientation == "xz":
+                        try:
+                            layer_elevation = layer["elevation"][k, i]
+                        except:
+                            layer_elevation = layer["elevation"][k, j]
+                    else:
+                        try:
+                            layer_elevation = layer["elevation"][k, j]
+                        except:
+                            layer_elevation = layer["elevation"][j, k]
+
+
+                    nk = k + a.vk
+                    nj = j + a.vj
+                    ni = i + a.vi
+                    # value = np.float64('nan')
+
+
+                    if np.isnan(np.float64(layer_elevation)) or any(
+                        value[0] > grid_data[k,j,i] and \
+                            layer["option"] < value[1] for value in rankLayers
+                    ):
+                        continue
+                    # gridPID = grid_data[k,j,i]
+                    # tmodelElevationCC = tmodel[i, j, k]
+                    # tmodelElevationNC = tmodel[ni,nj,nk]
+                    if  grid_data[k,j,i] != 0 and \
+                        tmodel[i, j, k] <= layer_elevation < tmodel[ni,nj,nk] and \
+                        layer["elevation"] is not None:
+
+
+                        grid_data[k,j,i] = model.configuration.partitionCounter
+                        grid_data[nk,nj,ni] = model.configuration.partitionCounter
+
+                        if special_grid_data[k, j, i] == 0:
+                            special_grid_data[k, j, i] = partitionCounter
+                        if special_grid_data[nk,nj,ni] == 0:
+                            special_grid_data[nk,nj,ni] = partitionCounter
+
+                        t = 1
                         ptk = k - t*a.vk
                         ptj = j - t*a.vj
                         pti = i - t*a.vi
 
-                    t = 1
-                    ntk = k + t*a.vk
-                    ntj = j + t*a.vj
-                    nti = i + t*a.vi
+                        valid_offset = 0 <= i - t*a.vi and \
+                            0 <= j - t*a.vj and 0 <= k - t*a.vk
 
-                    valid_offset = (i + t)*a.vi + (j + t)*a.vj + (k + t)*a.vk <\
-                        (cmodel.nx-1)*a.vi+(cmodel.ny-1)*a.vj+(cmodel.nz-1)*a.vk
+                        while valid_offset and\
+                            layer_elevation - layer["width"] < tmodel[pti,ptj,ptk]:
 
-                    while valid_offset and\
-                        layer_elevation + layer["width"] > model[nti,ntj,ntk]:
+                            grid_data[ptk,ptj,pti] = \
+                                model.configuration.partitionCounter
 
-                        grid_data[ntk,ntj,nti] = \
-                            cmodel.settings.partition_number + 1
+                            if special_grid_data[ptk,ptj,pti] == 0:
+                                special_grid_data[ptk,ptj,pti] = partitionCounter
 
-                        if special_grid_data[ntk,ntj,nti] == 0:
-                            special_grid_data[ntk,ntj,nti] = partition_number
+                            t += 1
+                            ptk = k - t*a.vk
+                            ptj = j - t*a.vj
+                            pti = i - t*a.vi
 
-                        t += 1
+                            if pti < 0 or ptj < 0 or ptk < 0 :
+                                valid_offset = False
+
+                        t = 1
                         ntk = k + t*a.vk
                         ntj = j + t*a.vj
                         nti = i + t*a.vi
 
-    return grid_data, special_grid_data
+                        valid_offset = i + t*a.vi < model.nx and \
+                            j + t*a.vj < model.ny and \
+                            k + t*a.vk < model.nz
 
+                        while valid_offset and\
+                            layer_elevation + layer["width"] > tmodel[nti,ntj,ntk]:
 
-class Check_Control():
-    '''
-        Data structure to hold the moving vector for the parition check
-    '''
-    def __init__(self, vd, vi, vj, vk):
-        ## vector direction
-        self.vd = vd
-        ## vector i switch
-        self.vi = vi
-        ## vector i switch
-        self.vj = vj
-        ## vector i switch
-        self.vk = vk
+                            grid_data[ntk,ntj,nti] = \
+                                model.configuration.partitionCounter
 
+                            if special_grid_data[ntk,ntj,nti] == 0:
+                                special_grid_data[ntk,ntj,nti] = partitionCounter
 
-def generate_special_partitions(cmodel,layers,old_grid_data=None,name="fault"):
-    '''
-        Generate model cell clusters regarding faults or seams
-        and add a patiation number to this cells
-    '''
-    SPECIALpartition_number = 1
+                            t += 1
+                            ntk = k + t*a.vk
+                            ntj = j + t*a.vj
+                            nti = i + t*a.vi
 
-    if old_grid_data is None:
-        grid_data = np.zeros((cmodel.nz, cmodel.ny, cmodel.nx), np.int32)
-    else:
-        grid_data = np.copy(old_grid_data)
+                            valid_offset = i + t*a.vi < model.nx and \
+                                j + t*a.vj < model.ny and \
+                                k + t*a.vk < model.nz
 
-    special_grid_data = np.zeros_like(grid_data)
+                    else:
+                        special_grid_data[k, j, i] = 0
 
-    print("\n====================================")
-    print("\tGenerate " + name + " partitions")
-    print("====================================\n")
-    print(name + "   \t| partition number")
-    print("------------------------------------")
-
-    for l in range(0, len(layers.A)):
-
-        ## set direction for partion checks
-        # for every layer two checks are performed "a" and "b"
-        if layers.orientation[l] == "xy":
-            # in case of structure (layer/fautl/seam) surface is orientated
-            # in xy orientation
-            ## a do check in z (k = 2) direction
-            a = Check_Control(2, 0, 0, 1)
-            ## b do check in x (i = 0) direction
-            b = Check_Control(0, 1, 0, 0)
-        elif layers.orientation[l] == "xz":
-            # in case of structure (layer/fautl/seam) surface is orientated
-            # in xz orientation
-            ## a do check in y (j = 1) direction
-            a = Check_Control(1, 0, 1, 0)
-            ## b do check in x (i = 0) direction
-            b = Check_Control(2, 1, 0, 0)
-        else:
-            # in case of structure (layer/fautl/seam) surface is orientated
-            # in yz orientation
-            ## a do check in x (i = 0) direction
-            a = Check_Control(0, 1, 0, 0)
-            ## b do check in x (i = 0) direction
-            b = Check_Control(2, 1, 0, 0)
-
-
-        grid_data, special_grid_data = identify_partition_elements(
-            cmodel,
-            grid_data,
-            special_grid_data,
-            a,
-            layers.orientation[l],
-            layers.A[l],
-            SPECIALpartition_number
-        )
-
-        grid_data, special_grid_data = identify_partition_elements(
-            cmodel,
-            grid_data,
-            special_grid_data,
-            b,
-            layers.orientation[l],
-            layers.B[l],
-            SPECIALpartition_number
-        )
-
-        print(layers.A[l]["name"] + "\t| " + \
-            str(cmodel.settings.partition_number + 1))
-        SPECIALpartition_number += 1
-        cmodel.settings.partition_number += 1
-
-    return grid_data, special_grid_data
-
-
-def points_to_pyvista_surface(cmodel, filename, x, y, z):
-    '''
-        Create vtk output of layers, faults or seams
-    '''
-
-    status = True
-    points = np.zeros( (len(x), 3) )
-    for i, x_value in enumerate(x):
-        points[i,0] = x_value
-        points[i,1] = y[i]
-        points[i,2] = z[i]
-
-    points = points[~np.isnan(points).any(axis=1),:]
-
-    if cmodel.settings.rotation_angle != 0:
-        points = np.array(
-            [rotate_coordinate(cmodel, points[i,:]) for i in range(len(points))]
-        )
-
-    if cmodel.settings.model_p1 != [0,0,0]:
-        points =  np.array(
-            [
-                shift_coordinate(
-                    points[i,:], [-value for value in cmodel.settings.model_p1]
-                ) for i in range(len(points))
-            ]
-        )
-
-    points = points[~np.isnan(points).any(axis=1),:]
-
-    vtk_filename = filename + ".vtk"
-    pcl = pv.PolyData(points)
-    mesh = pcl.delaunay_2d(tol=1e-06)
-    mesh.save(vtk_filename)
-
-    return status
-
-
-def points_to_vtk_surface(cmodel, filename, x, y, z):
-    '''
-        Create vtk output of layers, faults or seams
-    '''
-
-    points = np.zeros( (len(x), 3) )
-    for i, x_value in enumerate(x):
-        points[i,0] = x_value
-        points[i,1] = y[i]
-        points[i,2] = z[i]
-    points = points[~np.isnan(points).any(axis=1),:]
-
-    if cmodel.settings.rotation_angle != 0:
-        points = np.array(
-            [rotate_coordinate(cmodel, points[i,:]) for i in range(len(points))]
-        )
-
-    if cmodel.settings.model_p1 != [0,0,0]:
-        points =  np.array(
-            [
-                shift_coordinate(
-                    points[i,:], [-value for value in cmodel.settings.model_p1]
-                ) for i in range(len(points))
-            ]
-        )
-
-    try:
-        # 2d surface
-        if not cmodel.settings.s3d:
-            triangles = Delaunay(points,qhull_options="QJ Pp Qw")
-        # 3d surface
-        else:
-            triangles = Delaunay(points,qhull_options="Qbb Qt Qc Qz Q12")
-
-        # list of triangles that form the tesselation
-        ncells = triangles.simplices.shape[0]
-
-        connections =  np.zeros(ncells * 3)
-        for i in range(ncells):
-            ii = i * 3
-            connections[ii]     = triangles.simplices[i,0]
-            connections[ii + 1] = triangles.simplices[i,1]
-            connections[ii + 2] = triangles.simplices[i,2]
-
-        offset = np.zeros(ncells)
-        for i in range(ncells):
-            offset[i] = (i + 1) * 3
-
-        # vtk triangle cell type id = 5
-        cell_type = np.ones(ncells) * 5
-
-        for i in range(len(points)):
-            x[i] = points[i,0]
-            y[i] = points[i,1]
-            z[i] = points[i,2]
-
-
-        unstructuredGridToVTK(
-            filename + "_qhull" , x, y, z,
-            connectivity = connections,
-            offsets = offset,
-            cell_types = cell_type,
-            cellData = None,
-            pointData = {"Elevation" : z}
-        )
-        status = True
-    except ValueError:
-        status = False
-
-    return status
-
-
-def print_help():
-    '''
-        Help text
-    '''
-    print('\n\tPlease use this command to run GEOMODELATOR:\n' + \
-         '\033[1m\tpython [-i] [-u] [path]geomodelator.py ' + \
-         '[path]<config file name> ' + \
-         '[2>&1 | tee [path]<log file name>]\033[0m' + \
-         '\n\n\t\033[1mExamples:\033[0m' + \
-         '\n\tpython -u geomodelator.py examples/2d/config.py 2>&1 ' + \
-         '| tee config.log' + \
-         '\n\tpython -i geomodelator.py examples/3d/config.py')
-    sys.exit()
+        return grid_data, special_grid_data

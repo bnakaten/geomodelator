@@ -1,110 +1,90 @@
+
+[![DOI:10.5880/GFZ.3.4.2025.001](https://img.shields.io/badge/DOI-10.5880%2FGFZ.3.4.2025.001-blue.svg)](https://doi.org/10.5880/GFZ.3.4.2025.001) [![DOI:10.5880/GFZ.3.4.2024.003](https://img.shields.io/badge/DOI-10.5880%2FGFZ.3.4.2024.003-blue.svg)](https://doi.org/10.5880/GFZ.3.4.2024.003)
+
 # GEOMODELATOR
 
-A python library to generate simple structured 2d+ and 3d cell-based VTK models/files with layer, fault and seams as corresponding element/zone groups for further processing or integrating into a simulator framework (TRANSPORTSE).
+A python library to generate simple structured 2.5D and 3D cell-based VTK models/files with layer, fault and seams as corresponding element/zone groups for further processing or integrating into a simulator framework (TRANSPORTSE).
 
-[For further documentation use Wiki](https://git.gfz-potsdam.de/bnakaten/geomodelator/-/wikis)
+[Visit Wiki](https://git.gfz.de/bnakaten/geomodelator/-/wikis)
 
-![GEO MODEL generaTOR to build up 3d cell-based model](images/geomodelator01.png "GEO MODEL generATOR to build up 3d cell-based model")
+![GEO MODEL generaTOR to build up 3D cell-based model](geomodelator.png "GEO MODEL generATOR to build up 3d cell-based model")
 
 
 # Requirements
 
-**GEOMODELATOR** requires Python >= 3.6 and uses the following packages:
-  - ipython
+**GEOMODELATOR** requires Python = 3.13 and uses the following packages:
+  - python=3.13
+  - gdal
+  - geos
   - matplotlib
   - numpy
-  - pyevtk
+  - pyvista
   - scipy
+  - yaml
 
-# I) Preprocessing
+# I) Installation
 
-1. Download **GEOMODELATOR** and enter the directory.
+1. Download **GEOMODELATOR**.
 
     ```
-    git clone https://git.gfz-potsdam.de/bnakaten/geomodelator
+    git clone https://git.gfz.de/bnakaten/geomodelator
+
+    #git -c http.sslVerify=false  clone https://git.gfz.de/bnakaten/geomodelator
 
     cd geomodelator
+
+    git checkout tags/v2.0
     ```
 
 
-2. Setup conda envrionment conda. 
+2. Setup conda envrionment conda.
 
     ```
-    conda env create -f environment.yml
+    mamba env create -f environment.yml
 
-    conda activate geomodelator
-    ```
- 
-
-3. Create an new model project directory by copying a suitable example directory.
-
-    For 2d/3d with or without rotated model data:
-    ```
-    cp -r examples/3d [model name]
-    ```
-    
-    Enter the model directory:
-    ```
-    cd [model name]
+    mamba activate gml
     ```
 
-4. Copy csv point cloud files to the 1_input directory. Rename the files equivalent to the described name scheme.
+3. Create a new model project directory or duplicate the existing demo directory and rename it.
 
-    1. Point cloud files which represent top or bottom of a geological formation:
-        - layer-01.csv
-        - layer-02.csv
-        - layer-03.csv
-        - ...
-    
-    2. Point cloud files which represent fault structures:
-        - fault-01.csv
-        - fault-02.csv
-        - fault-03.csv
-        - ...
-    
-    3. Point cloud files which represent seam structures:
-        - seam-01.csv
-        - seam-02.csv
-        - seam-03.csv
-        - ...
-
-    4. Optional: The discretization of the model can be provide by numpy files (numpy.save(...)) for dx, dy and dz.
+4. Copy the point cloud files in CSV format (x, y, z) for the desired horizon and fault surfaces into the input directory.
 
 
-# II) Generate Model
+# II) Use GEOMODELATOR
 
-1. Setup the model configuration by following the inline documentation.
+1. Set up the model details by customizing the configuration file in accordance with the manual.
 
     ```
-    vi config.py
+    vi configuration.yaml
     ```
 
-2. Model generation.
+2. Generate the model.
 
     ```
-    cd ..
-
-    ipython geomodelator.py [model name]/config.py
+    python geomodelator.py [path to the new project directory]/configuration.yaml
     ```
-    
+
+    **e.g. run demo:**
+    ```
+    python geomodelator.py examples/demo/configuration.yaml
+    ```
+
     -> Output:
-    
-    - VTK file with 3d model including all data: [model name]/2_output/model.vtu
-    - VTK files for all used layer surfaces:     [model name]/2_output/layer-xx.vtu
-    - VTK files for all used fault surfaces:     [model name]/2_output/fault-xx.vtu
-    - VTK files for all used seam surfaces:      [model name]/2_output/seam-xx.vtu
-    
-    - Numpy array files with 3d model data
-        * all:            [model name]/2_output/model_all_data_numpy_array.npz
-        * cell ids:       [model name]/2_output/model_cell_id_numpy_array.npz
-        * layer parition: [model name]/2_output/model_layer_parition_data_numpy_array.npz
-        * fault parition: [model name]/2_output/model_fault_parition_data_numpy_array.npz
-        * seam parition:  [model name]/2_output/model_seam_parition_data_numpy_array.npz
-    
-    Note: 
-    Example how to use the compressed numpy data arrays:
-    
+
+    - VTK file with 3D model including all data: model.vts
+    - VTK files for horizon and fault surfaces: ....vtu
+    - Numpy array files with all 3d model data: model_all_data_numpy_array.npz
+
+    - Compressed file with all input files: Input.zip
+    - Compressed file with all output files: Output.zip
+
+3. The further use of the model data..
+
+    - Use in TRANSPORTSE.
+    - Parametrise the model and model cells by custom python code.
+    - Visualize the result files in Paraview. For reference, the example demo output_default includes all the output files that are generated when the demo model is executed.
+
     ```
-    lgrid = numpy.load('model_all_data_numpy_array.npz')
-    model_data = lgrid['array1']
+    allModelData = numpy.load('model_all_data_numpy_array.npz')
+    modelData = allModelData['array1']
     ```
