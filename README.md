@@ -1,9 +1,9 @@
 
-[![DOI:10.5880/GFZ.3.4.2025.001](https://img.shields.io/badge/DOI-10.5880%2FGFZ.3.4.2025.001-blue.svg)](https://doi.org/10.5880/GFZ.3.4.2025.001) [![DOI:10.5880/GFZ.3.4.2024.003](https://img.shields.io/badge/DOI-10.5880%2FGFZ.3.4.2024.003-blue.svg)](https://doi.org/10.5880/GFZ.3.4.2024.003)
+[![DOI:10.5880/GFZ.AJPH.2025.001](https://img.shields.io/badge/DOI-10.5880%2FGFZ.AJPH.2025.001-blue.svg)](https://doi.org/10.5880/GFZ.AJPH.2025.001) [![DOI:10.5880/GFZ.3.4.2024.003](https://img.shields.io/badge/DOI-10.5880%2FGFZ.3.4.2024.003-blue.svg)](https://doi.org/10.5880/GFZ.3.4.2024.003)
 
 # GEOMODELATOR
 
-A python library to generate simple structured 2.5D and 3D cell-based VTK models/files with layer, fault and seams as corresponding element/zone groups for further processing or integrating into a simulator framework (TRANSPORTSE).
+GEOMODELATOR is a Python library designed to generate simple, structured 2.5D and 3D VTK models/files with layers, faults, and seams, organized into corresponding element/zone groups for subsequent processing or integration into simulation frameworks like TRANSPORTSE. In the current version, the layer ranking has been expanded, and the option to use YAML or JSON files as configuration files has been added. Furthermore, the code is now ready to be used as a service within the GeomodelatorGUI framework. Finally, the source code has been revised.
 
 [Visit Wiki](https://git.gfz.de/bnakaten/geomodelator/-/wikis)
 
