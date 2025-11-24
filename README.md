@@ -5,7 +5,7 @@
 
 GEOMODELATOR is a Python library designed to generate simple, structured 2.5D and 3D VTK models/files with layers, faults, and seams, organized into corresponding element/zone groups for subsequent processing or integration into simulation frameworks like TRANSPORTSE. In the current version, the layer ranking has been expanded, and the option to use YAML or JSON files as configuration files has been added. Furthermore, the code is now ready to be used as a service within the GeomodelatorGUI framework. Finally, the source code has been revised.
 
-[Visit Wiki](https://github.com/beppobn/geomodelator/wiki)
+[Visit Wiki](https://github.com/bnakaten/geomodelator/wiki)
 
 ![GEO MODEL generaTOR to build up 3D cell-based model](geomodelator.png "GEO MODEL generATOR to build up 3d cell-based model")
 
@@ -27,9 +27,9 @@ GEOMODELATOR is a Python library designed to generate simple, structured 2.5D an
 1. Download **GEOMODELATOR**.
 
     ```
-    git clone https://github.com/beppobn/geomodelator.git
+    git clone https://github.com/bnakaten/geomodelator.git
 
-    #git -c http.sslVerify=false clone https://github.com/beppobn/geomodelator.git
+    #git -c http.sslVerify=false clone https://github.com/bnakaten/geomodelator.git
 
     cd geomodelator
 
