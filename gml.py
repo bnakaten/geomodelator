@@ -1369,11 +1369,10 @@ class Partitioning(Helper):
                 surface.save(vtk_filename)
 
             else:
-
                 tiff_file = \
                     model.configuration.outputPath + model.configuration.maskFileName
 
-                if not old_grid_data:
+                if not old_grid_data.any():
                     old_grid_data = np.zeros((model.nz, model.ny, model.nx), np.int32)
 
                 logging.info("====================================")
