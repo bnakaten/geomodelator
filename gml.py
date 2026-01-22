@@ -1071,66 +1071,51 @@ class Partitioning(Helper):
         l,
         lx,
         ly,
-        current_cell_center_elevation,
-        pt
+        grid_cell_elevation,
+        pt,
+        rankLayers,
+        grid_data_element
     ):
         '''
             Set new parition ids
         '''
-        new_pid = False
+        newPidArray = [False for _ in range(l)]
+        if not newPidArray:
+            newPidArray = [False]
 
         current_layer_elevation = layers.A[l]['elevation'][ly, lx]
+        current_layer_priority = layers.A[l]['option']
 
         # ist die das mittelpunkt des aktullen elementes unterhalb der aktuellen
         # horizontoberfläche (layer surface) dann gehört das element zur parition
         # des neuen layers
-        if current_cell_center_elevation < current_layer_elevation:
-            current_layer_priority = layers.A[l]['option']
-            new_pid = l == 0
-
-            # new_pid = True
+        if not math.isnan(current_layer_elevation) and grid_cell_elevation < current_layer_elevation:
+            if l == 0:
+                newPidArray = [True]
 
             # falls aber bereits eine andere partition existiert die eine höhere
-            # priorität (rank) hat dann eben nicht, also wir hier noch mal gegen alle
-            # anderen horizontoberflächen die priorität geprüft
+            # priorität (rank) hat dann eben nicht, also wird hier noch mal gegen alle
+            # anderen horizontalflächen die priorität geprüft
             for pi in (range(l)):
+
                 try:
                     old_layer_elevation = layers.A[pi]['elevation'][ly, lx]
                     old_layer_priority = pt.mode1[pi]
                 except:
-                    pass
+                    pass                          
 
-                if old_layer_priority == current_layer_priority:
-                    new_pid = True
+                if old_layer_priority == current_layer_priority:           
+                    newPidArray[pi] = True
                 # an already processed layer surface with higher priority cuts the
                 # current layer surface
                 elif old_layer_priority > current_layer_priority and \
-                    old_layer_elevation > current_cell_center_elevation:
-                    new_pid = True
+                    old_layer_elevation > grid_cell_elevation:
+                    newPidArray[pi] = True
 
-                # if old_layer_elevation >= current_layer_elevation and \
-                #    old_layer_priority >= current_layer_priority:
-                #     new_pid = True
-
-                # if current_layer_elevation < old_layer_elevation and \
-                #     current_layer_priority == old_layer_priority:
-                #     new_pid = True
-
-                # if current_cell_center_elevation < old_layer_elevation < \
-                #     current_layer_elevation and current_layer_priority < \
-                #     old_layer_priority:
-                #     new_pid = True
-
-                # if current_layer_elevation < old_layer_elevation and \
-                #     current_layer_priority < old_layer_priority:
-                #     new_pid = True
-
-                # if old_layer_elevation < current_cell_center_elevation < \
-                #     current_layer_elevation and current_layer_priority < \
-                #     old_layer_priority:
-                #     new_pid = False
-
-        return new_pid
+                elif math.isnan(old_layer_elevation):
+                    newPidArray[pi] = True
+                    
+        return all(newPidArray)
 
 
     def generateModelCellIds(self, model):
@@ -1358,6 +1343,12 @@ class Partitioning(Helper):
         pt.pid = []
 
         rankLayers = []
+        rankLayers.append(
+            [0, 99]
+        )
+        rankLayers.append(
+            [1, 0]
+        )
 
         model.configuration.part['all'] = 0
         model.configuration.part['default'] = 1
@@ -1375,8 +1366,6 @@ class Partitioning(Helper):
                 rankLayers.append(
                     [model.configuration.partitionCounter, layers.A[l]['option']]
                 )
-                # print(rankLayers[-1][0],rankLayers[-1][1])
-                print(layers.orientation[l])
 
             pt.pid.append(model.configuration.partitionCounter)
             model.configuration.part[layers.A[l]['name']] = \
@@ -1395,7 +1384,6 @@ class Partitioning(Helper):
 
             tmodel = np.meshgrid(model.x, model.y, model.z, indexing='ij')[ijk]
 
-
             if layers.A[l]['fileType'] == "layer":
                 for i in range(0, model.nx):
                     for j in range(0, model.ny):
@@ -1411,21 +1399,17 @@ class Partitioning(Helper):
                                 ly = k
 
                             new_pid = self.setNewParitionId(
-                                layers, l, lx, ly, tmodel[i, j, k], pt
+                                layers, l, lx, ly, tmodel[i, j, k], pt, rankLayers, grid_data[k,j,i],
                             )
 
                             if old_grid_data[k,j,i] != 0:
                                 if new_pid:
                                     grid_data[k, j, i] = pt.pid[l]
+
+
+
                             else:
                                 grid_data[k, j, i] = 0
-
-
-                            if partition_data[k,j,i] != 0:
-                                if new_pid:
-                                    partition_data[k, j, i] = pt.pid[l]
-                            else:
-                                partition_data[k, j, i] = 0
 
 
             elif layers.A[l]['fileType'] == "fault":
@@ -1464,14 +1448,10 @@ class Partitioning(Helper):
             identify elements that are part of partition
         '''
         tmodel = np.meshgrid(model.x, model.y, model.z, indexing='ij')[a.vd]
-        flag = 0
-        flag2 = 0
-        flag3 = 0
 
         for i in range(0, model.nx - a.vi):
             for j in range(0, model.ny - a.vj):
                 for k in range(0, model.nz - a.vk):
-
 
                     layer_elevation = 0
 
@@ -1491,88 +1471,40 @@ class Partitioning(Helper):
                         except:
                             layer_elevation = layer["elevation"][k, j]
 
-
                     nk = k + a.vk
                     nj = j + a.vj
                     ni = i + a.vi
-                    # value = np.float64('nan')
-                    
-                    ## if element is inactive do nothing on this element and go to next element
-                    # if  grid_data[k,j,i] == 0:
-                    #     continue
-
-                    # ## if the layer elevation value is not set for this element jump to next element
-                    # if layer["elevation"] is None:
-                    #     special_grid_data[k, j, i] = 0
-                    #     continue
                     
                     ## ???? if all layer elevation values are not set for this element jump to next element
-                    if np.isnan(np.float64(layer_elevation)):
+                    if np.isnan(np.float64(layer_elevation)) or grid_data[k,j,i] == 1:
                         continue
 
+                    if tmodel[i, j, k] > layer_elevation or layer_elevation > tmodel[ni,nj,nk]:
+                        continue                        
 
-                    ## ???? compare current layer ranking with all other layer rankings
-                    if np.isnan(np.float64(layer_elevation)) and any(
-                        value[0] > grid_data[k,j,i] and \
-                            layer["option"] < value[1] for value in rankLayers
-                    ):
-                        continue
+                    idx, idxRank = next(
+                        ((sub[0], sub[1]) for sub in rankLayers if sub[0] == grid_data[k, j, i]),# or grid_data[k,j,i] == 1),
+                        (None, None)
+                    )
 
-
-                    # if flag == 0:
-                    #     print(layer["width"])
-                    #     flag = 1
-                    
-                    # if flag == 0:
-                    #     idx, idxRank  = next(((sub[0], sub[1]) for sub in rankLayers if sub[0] == grid_data[k,j,i]), None)
-                    #     print("> ",idx, idxRank)
-                    #     flag = 1
-                    
-                    # if flag2 == 0:
-                    #     idx, idxRank  = next(((sub[0], sub[1]) for sub in rankLayers if sub[0] == grid_data[k,j,i]), None)
-                    #     if tmodel[i, j, k] <= layer_elevation < tmodel[ni,nj,nk] and idxRank < layer["option"]:
-                    #         print(">> ",layer["option"] ,  idxRank)
-                    #         flag2 = 1
-
-                    
-
-
-                    # if np.isnan(np.float64(layer_elevation)) or any(
-                    #     value[0] > grid_data[k,j,i] and \
-                    #         layer["option"] < value[1] for value in rankLayers
-                    # ):
-                    #     continue
-                    # gridPID = grid_data[k,j,i]
-                    # tmodelElevationCC = tmodel[i, j, k]
-                    # tmodelElevationNC = tmodel[ni,nj,nk]
-                    # if tmodel[i, j, k] <= layer_elevation < tmodel[ni,nj,nk] and \
-                    #     layer["elevation"] is not None:
-                    
+                    idxN, idxRankN = next(
+                        ((sub[0], sub[1]) for sub in rankLayers if sub[0] == grid_data[nk, nj, ni]),# or grid_data[k,j,i] == 1),
+                        (None, None)
+                    )
                     ## if the current element elevation value is between 
                     ## the current model element elevation value and the next element elevation value
                     ## this indicates that the layer is between the tow elements
-                    idx, idxRank = next(
-                        ((sub[0], sub[1]) for sub in rankLayers if sub[0] == grid_data[k, j, i]),
-                        (None, None)
-                    )
+        
                     if tmodel[i, j, k] <= layer_elevation < tmodel[ni,nj,nk]:
-                        # and idxRank is not None and  idxRank < layer["option"]:
-                        # (idxRank is None or  idxRank < layer["option"]):
-                    #if tmodel[i, j, k] <= layer_elevation < tmodel[ni,nj,nk]:
 
-
-
-                        # for value in rankLayers:
-                        #     print("a", tmodel[i, j, k], layer_elevation, tmodel[ni,nj,nk]) 
-                        #     print("b", value[0], grid_data[k,j,i], layer["option"], value[1]) 
-
-
-                        if idxRank is not None and  idxRank < layer["option"]:
+                        if idxRank is not None and idxRank < layer["option"]:                       
                             grid_data[k,j,i] = model.configuration.partitionCounter
-                            grid_data[nk,nj,ni] = model.configuration.partitionCounter
-
                             if special_grid_data[k, j, i] == 0:
                                 special_grid_data[k, j, i] = partitionCounter
+
+
+                        if idxRankN is not None and idxRankN < layer["option"]:
+                            grid_data[nk,nj,ni] = model.configuration.partitionCounter
                             if special_grid_data[nk,nj,ni] == 0:
                                 special_grid_data[nk,nj,ni] = partitionCounter
 
@@ -1580,7 +1512,6 @@ class Partitioning(Helper):
                         ptk = k - t*a.vk
                         ptj = j - t*a.vj
                         pti = i - t*a.vi
-
 
                         valid_offset = False
                         if 0 <= pti and 0 <= ptj and 0 <= ptk:
@@ -1591,16 +1522,8 @@ class Partitioning(Helper):
                                 (None, None)
                             )
 
-                        # print("> k: " + str(k) + " - " +str(t) + " * " +str(a.vk) + " = " +str(ptk) + " ; ", end="")
-                        # print("  j: " + str(j) + " - " +str(t) + " * " +str(a.vj) + " = " +str(ptj) + " ; ", end="")
-                        # print("  i: " + str(i) + " - " +str(t) + " * " +str(a.vi) + " = " +str(pti) + " ; ")                                
-                        # print("* " + str(t) + " : " + str(valid_offset) + " : "  + str(layer_elevation - layer["width"]) + " : " + str(tmodel[pti,ptj,ptk]) + " : " + str(idxRank) + " : " +str(layer["option"]) + " - ")
-
-
                         while valid_offset and\
                             layer_elevation - layer["width"] < tmodel[pti,ptj,ptk]:
-                            # and idxRank is not None and  idxRank < layer["option"]:
-                            # (idxRank is None or  idxRank < layer["option"]):
 
                             if idxRank is not None and  idxRank < layer["option"]:
                                 grid_data[ptk,ptj,pti] = \
@@ -1616,8 +1539,6 @@ class Partitioning(Helper):
 
                             valid_offset = False
                             if 0 <= pti and 0 <= ptj and 0 <= ptk:                 
-                                # print("= " + str(t) + " : "  + str(layer_elevation - layer["width"]) + " : " + str(tmodel[pti,ptj,ptk]) + " : " + str(idxRank) + " : " +str(layer["option"]) + " - ")
-
                                 valid_offset = True
 
                                 idx, idxRank = next(
@@ -1625,12 +1546,10 @@ class Partitioning(Helper):
                                     (None, None)
                                 )
 
-
                         t = 1
                         ntk = k + t*a.vk
                         ntj = j + t*a.vj
                         nti = i + t*a.vi
-
 
                         valid_offset = False
                         if nti < model.nx and ntj < model.ny and ntk < model.nz:
@@ -1643,7 +1562,6 @@ class Partitioning(Helper):
 
                         while valid_offset and\
                             layer_elevation + layer["width"] > tmodel[nti,ntj,ntk]:
-                            # and idxRank is not None and idxRank <= layer["option"]:
 
                             if idxRank is not None and  idxRank < layer["option"]:
                                 grid_data[ntk,ntj,nti] = \
@@ -1657,19 +1575,14 @@ class Partitioning(Helper):
                             ntj = j + t*a.vj
                             nti = i + t*a.vi
 
-
                             valid_offset = False
                             if nti < model.nx and ntj < model.ny and ntk < model.nz:
                                 valid_offset = True
-
                             
                                 idx, idxRank = next(
                                     ((sub[0], sub[1]) for sub in rankLayers if sub[0] == grid_data[ntk,ntj,nti]),
                                     (None, None)
                                 )
-                        # print(str(t) + " : " + str(layer_elevation + layer["width"]) + " : " + str(tmodel[nti,ntj,ntk]) + " : " + str(idxRank) + " : " +str(layer["option"]))
-
-                        # print(str(i) + " ; " +str(t) + " ; " +str(a.vi) + " ; " +str(model.nx) + " ; ")
                     else:
                         special_grid_data[k, j, i] = 0
 
